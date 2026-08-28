@@ -1,0 +1,115 @@
+{
+  "name": "hydracast",
+  "version": "1.0.0",
+  "description": "Hydracast - free multi-platform live broadcast relay for Streamlabs / OBS",
+  "main": "./out/main/index.js",
+  "author": {
+    "name": "Khalid Tawabini",
+    "email": "tawakhalid@gmail.com"
+  },
+  "license": "MIT",
+  "private": true,
+  "scripts": {
+    "dev": "electron-vite dev",
+    "start": "electron-vite preview",
+    "build": "electron-vite build",
+    "typecheck": "tsc --noEmit -p tsconfig.node.json && tsc --noEmit -p tsconfig.web.json",
+    "dist": "electron-vite build && electron-builder --win --publish never",
+    "dist:portable": "electron-vite build && electron-builder --win portable --publish never",
+    "test:pipeline": "esbuild test/pipeline.test.ts --bundle --platform=node --format=cjs --outfile=test/.pipeline.cjs --external:electron --external:node-media-server --alias:@shared=./src/shared && node test/.pipeline.cjs"
+  },
+  "dependencies": {
+    "ffmpeg-static": "^5.2.0",
+    "node-media-server": "^2.7.0",
+    "ws": "^8.18.0"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.2",
+    "@types/react": "^18.3.17",
+    "@types/react-dom": "^18.3.5",
+    "@types/ws": "^8.5.13",
+    "@vitejs/plugin-react": "^4.3.4",
+    "electron": "^33.3.0",
+    "electron-builder": "^25.1.8",
+    "electron-vite": "^2.3.0",
+    "framer-motion": "^11.15.0",
+    "mpegts.js": "^1.7.3",
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1",
+    "typescript": "^5.7.2",
+    "vite": "^5.4.11"
+  },
+  "build": {
+    "appId": "com.hydracast.app",
+    "productName": "Hydracast",
+    "directories": {
+      "output": "release",
+      "buildResources": "build"
+    },
+    "files": [
+      "out/**/*",
+      "package.json"
+    ],
+    "asarUnpack": [
+      "**/node_modules/ffmpeg-static/**"
+    ],
+    "win": {
+      "target": [
+        {
+          "target": "nsis",
+          "arch": [
+            "x64"
+          ]
+        },
+        {
+          "target": "portable",
+          "arch": [
+            "x64"
+          ]
+        }
+      ],
+      "artifactName": "Hydracast-Setup-${version}.${ext}",
+      "icon": "build/icon.ico"
+    },
+    "nsis": {
+      "oneClick": false,
+      "allowToChangeInstallationDirectory": true,
+      "createDesktopShortcut": true,
+      "shortcutName": "Hydracast",
+      "installerIcon": "build/icon.ico",
+      "uninstallerIcon": "build/icon.ico",
+      "installerHeaderIcon": "build/icon.ico",
+      "deleteAppDataOnUninstall": false,
+      "perMachine": false
+    },
+    "portable": {
+      "artifactName": "Hydracast-Portable-${version}.${ext}"
+    },
+    "publish": [
+      {
+        "provider": "github",
+        "owner": "tawakhalid",
+        "repo": "hydracast"
+      }
+    ]
+  },
+  "homepage": "https://github.com/tawakhalid/hydracast",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/tawakhalid/hydracast.git"
+  },
+  "bugs": {
+    "url": "https://github.com/tawakhalid/hydracast/issues"
+  },
+  "keywords": [
+    "streaming",
+    "multistream",
+    "rtmp",
+    "restreaming",
+    "obs",
+    "streamlabs",
+    "twitch",
+    "youtube",
+    "electron"
+  ]
+}

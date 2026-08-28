@@ -1,0 +1,11 @@
+node_modules/
+out/
+release/
+dist/
+test/.pipeline.cjs
+*.tsbuildinfo
+*.log
+.env
+.env.*
+!.env.example
+.DS_Store
