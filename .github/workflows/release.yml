@@ -32,6 +32,11 @@ jobs:
       - name: Typecheck
         run: npm run typecheck
 
+      # electron-builder only packages what electron-vite has already compiled
+      # into out/, so this step is required before packaging.
+      - name: Compile main, preload and renderer
+        run: npm run build
+
       - name: Build installer and portable exe
         run: npx electron-builder --win nsis portable --publish never
         env:
