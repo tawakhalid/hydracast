@@ -117,11 +117,21 @@ The chat header carries the layout controls: **Aa** opens a slider for the messa
 and the eye button hides the video preview so chat can take the whole width. Drag the divider
 between the preview and the chat column to resize it.
 
-Those three settings are saved into the layout named in the chat header. Type a name into
-**Save current as...** to keep the arrangement you are looking at, then switch between layouts
-from the same menu — one for a wide preview while you set up, another for chat-only while you
-stream. Saved layouts can be renamed and deleted; **Default** cannot, so there is always a
-layout to fall back to.
+---
+
+## Layouts
+
+The workspace is built from four panels — preview, destinations, chat and activity — each with its
+own title bar and a chevron that rolls it up to a single line.
+
+Press the **pen** in the title bar to edit the arrangement. Every panel then gains controls to move
+it up or down its column, send it to the other column, or hide it. Drag the divider between the
+columns to change their widths.
+
+Editing never writes into a saved layout. Changes collect as a draft, shown as **Name (\*)** in the
+title bar, and the menu offers **Save** (into the current layout), **Save current as...** (a new
+one) or **Revert**. **Default** is never overwritten and cannot be renamed or deleted, so selecting
+it always restores the original arrangement — the reliable way back from any experiment.
 
 ---
 

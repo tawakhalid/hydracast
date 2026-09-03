@@ -1,13 +1,37 @@
 import { EventEmitter } from 'events'
-import type { ChatMessage, Platform } from '@shared/types'
+import type { ActivityEvent, ActivityKind, ChatMessage, Platform } from '@shared/types'
 
 const API = 'https://www.googleapis.com/youtube/v3'
+
+/**
+ * Super chats, stickers and memberships arrive on the same polled call as
+ * ordinary messages, distinguished only by `snippet.type`. No extra scope or
+ * credential is needed beyond the API key already configured.
+ */
+const SNIPPET_KINDS: Record<string, ActivityKind> = {
+  superChatEvent: 'donation',
+  superStickerEvent: 'donation',
+  newSponsorEvent: 'subscription',
+  memberMilestoneChatEvent: 'subscription',
+  membershipGiftingEvent: 'gift',
+  giftMembershipReceivedEvent: 'gift'
+}
 
 interface LiveChatItem {
   id: string
   snippet?: {
+    type?: string
     displayMessage?: string
     publishedAt?: string
+    superChatDetails?: { amountDisplayString?: string; userComment?: string; amountMicros?: string }
+    superStickerDetails?: { amountDisplayString?: string; amountMicros?: string }
+    newSponsorDetails?: { memberLevelName?: string; isUpgrade?: boolean }
+    memberMilestoneChatDetails?: {
+      memberLevelName?: string
+      memberMonth?: number
+      userComment?: string
+    }
+    membershipGiftingDetails?: { giftMembershipsCount?: number; giftMembershipsLevelName?: string }
   }
   authorDetails?: {
     displayName?: string
@@ -112,6 +136,8 @@ export class YouTubeChat extends EventEmitter {
       for (const item of (data.items ?? []) as LiveChatItem[]) {
         if (this.seen.has(item.id)) continue
         this.seen.add(item.id)
+        this.emitActivity(item)
+
         const text = item.snippet?.displayMessage
         if (!text) continue
         const message: ChatMessage = {
@@ -143,6 +169,54 @@ export class YouTubeChat extends EventEmitter {
       // Back off and retry - transient quota/network errors are common.
       this.timer = setTimeout(() => void this.poll(), 15000)
     }
+  }
+
+  /** Emits an activity event when a polled item is more than plain chat. */
+  private emitActivity(item: LiveChatItem): void {
+    const type = item.snippet?.type || ''
+    const kind = SNIPPET_KINDS[type]
+    if (!kind) return
+
+    const actor = item.authorDetails?.displayName || 'Viewer'
+    const s = item.snippet ?? {}
+    let detail = type
+    let amountLabel: string | undefined
+    let message: string | undefined
+
+    if (type === 'superChatEvent') {
+      amountLabel = s.superChatDetails?.amountDisplayString
+      detail = `sent a Super Chat${amountLabel ? ` of ${amountLabel}` : ''}`
+      message = s.superChatDetails?.userComment || undefined
+    } else if (type === 'superStickerEvent') {
+      amountLabel = s.superStickerDetails?.amountDisplayString
+      detail = `sent a Super Sticker${amountLabel ? ` of ${amountLabel}` : ''}`
+    } else if (type === 'newSponsorEvent') {
+      const level = s.newSponsorDetails?.memberLevelName
+      detail = s.newSponsorDetails?.isUpgrade
+        ? `upgraded their membership${level ? ` to ${level}` : ''}`
+        : `became a member${level ? ` at ${level}` : ''}`
+    } else if (type === 'memberMilestoneChatEvent') {
+      const months = s.memberMilestoneChatDetails?.memberMonth
+      detail = `has been a member for ${months ?? '?'} month${months === 1 ? '' : 's'}`
+      if (months) amountLabel = `${months} month${months === 1 ? '' : 's'}`
+      message = s.memberMilestoneChatDetails?.userComment || undefined
+    } else {
+      const count = s.membershipGiftingDetails?.giftMembershipsCount
+      detail = `gifted ${count ?? ''} membership${count === 1 ? '' : 's'}`.replace('  ', ' ')
+      if (count) amountLabel = `${count} gift${count === 1 ? '' : 's'}`
+    }
+
+    this.emit('activity', {
+      id: item.id,
+      platformId: this.platform.id,
+      platformKind: 'youtube',
+      timestamp: s.publishedAt ? new Date(s.publishedAt).getTime() : Date.now(),
+      kind,
+      actor,
+      detail,
+      amountLabel,
+      message
+    } satisfies ActivityEvent)
   }
 
   disconnect(): void {

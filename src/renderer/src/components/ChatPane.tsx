@@ -1,17 +1,8 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { AnimatePresence, motion } from 'framer-motion'
-import type { ChatMessage, ChatStatus, LayoutPreset, Platform } from '@shared/types'
+import type { ChatMessage, ChatStatus, Platform } from '@shared/types'
 import { supportsChat } from '@shared/types'
-import LayoutMenu from './LayoutMenu'
-import {
-  ChatIcon,
-  EyeIcon,
-  EyeOffIcon,
-  PlatformIcon,
-  PLATFORM_COLORS,
-  RefreshIcon,
-  TrashIcon
-} from '../icons'
+import { ChatIcon, PlatformIcon, PLATFORM_COLORS, RefreshIcon, TrashIcon } from '../icons'
 
 /** Bounds for the chat text-size slider, px. */
 const MIN_FS = 11
@@ -24,18 +15,6 @@ interface Props {
   /** Message text size in px; everything in a row scales off it. */
   fontSize: number
   onFontSize: (size: number) => void
-  /**
-   * Preview visibility. Omitted where there is no preview to toggle - the
-   * full-screen chat view - and the control is then not rendered.
-   */
-  showPreview?: boolean
-  onTogglePreview?: () => void
-  layouts: LayoutPreset[]
-  activeLayoutId: string
-  onSelectLayout: (id: string) => void
-  onCreateLayout: (name: string) => void
-  onRenameLayout: (id: string, name: string) => void
-  onDeleteLayout: (id: string) => void
   onClear: () => void
   onReconnect: (platformId: string) => void
 }
@@ -54,14 +33,6 @@ export default function ChatPane({
   chatStatus,
   fontSize,
   onFontSize,
-  showPreview,
-  onTogglePreview,
-  layouts,
-  activeLayoutId,
-  onSelectLayout,
-  onCreateLayout,
-  onRenameLayout,
-  onDeleteLayout,
   onClear,
   onReconnect
 }: Props) {
@@ -109,34 +80,12 @@ export default function ChatPane({
   const connectedCount = Object.values(chatStatus).filter((s) => s.state === 'connected').length
 
   return (
-    <div
-      className="panel chat"
-      style={{ position: 'relative', ['--chat-fs' as string]: `${shownSize}px` }}
-    >
-      <div className="panel-head">
-        <ChatIcon size={16} />
-        <span className="panel-title">Audience Chat</span>
-        <div className="spacer" />
+    <div className="chat" style={{ ['--chat-fs' as string]: `${shownSize}px` }}>
+      <div className="chat-toolbar">
         <span className="pill" style={{ height: 22, fontSize: 11 }}>
           {visible.length}
         </span>
-        <LayoutMenu
-          layouts={layouts}
-          activeId={activeLayoutId}
-          onSelect={onSelectLayout}
-          onCreate={onCreateLayout}
-          onRename={onRenameLayout}
-          onDelete={onDeleteLayout}
-        />
-        {onTogglePreview && (
-          <button
-            className="btn icon sm ghost"
-            onClick={onTogglePreview}
-            title={showPreview ? 'Hide the video preview' : 'Show the video preview'}
-          >
-            {showPreview ? <EyeIcon /> : <EyeOffIcon />}
-          </button>
-        )}
+        <div className="spacer" />
         <button
           className={`btn icon sm ghost ${sizeOpen ? 'active' : ''}`}
           onClick={() => setSizeOpen((v) => !v)}

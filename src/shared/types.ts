@@ -70,25 +70,58 @@ export interface Platform {
   chat: ChatConfig
 }
 
-/** The part of the UI a layout preset captures. */
+/** A movable panel in the broadcast workspace. */
+export type PanelId = 'preview' | 'destinations' | 'chat' | 'activity'
+
+/** Which column a panel sits in. */
+export type PanelRegion = 'left' | 'right'
+
+export interface PanelState {
+  id: PanelId
+  region: PanelRegion
+  /** Position within its region, ascending. */
+  order: number
+  /** Share of the region's height, relative to its siblings. */
+  flex: number
+  visible: boolean
+  /** Rolled up to just its title bar. */
+  collapsed: boolean
+}
+
+/** The part of the UI a layout captures. */
 export interface LayoutValues {
   chatFontSize: number
+  /** Width of the right-hand region, px. */
   chatWidth: number
-  showPreview: boolean
+  panels: PanelState[]
 }
 
 export interface LayoutPreset extends LayoutValues {
   id: string
   name: string
   /**
-   * The built-in layout. It can be adjusted like any other - the controls must
-   * not appear dead - but it cannot be renamed or deleted, so there is always a
-   * layout to fall back to.
+   * The built-in layout. It is never modified: editing while it is selected
+   * produces an unsaved draft instead, so selecting it always restores the
+   * original arrangement. That makes it the reliable way back.
    */
   builtIn?: boolean
 }
 
 export const DEFAULT_LAYOUT_ID = 'default'
+
+export const PANEL_TITLES: Record<PanelId, string> = {
+  preview: 'Preview',
+  destinations: 'Destinations',
+  chat: 'Chat',
+  activity: 'Activity'
+}
+
+export const DEFAULT_PANELS: PanelState[] = [
+  { id: 'preview', region: 'left', order: 0, flex: 1, visible: true, collapsed: false },
+  { id: 'destinations', region: 'left', order: 1, flex: 1.4, visible: true, collapsed: false },
+  { id: 'chat', region: 'right', order: 0, flex: 2, visible: true, collapsed: false },
+  { id: 'activity', region: 'right', order: 1, flex: 1, visible: true, collapsed: false }
+]
 
 export interface AppSettings {
   /** Port the local RTMP ingest server listens on - point Streamlabs here. */
@@ -109,18 +142,16 @@ export interface AppSettings {
   reconnectDelay: number
   /** Keep at most this many chat messages in memory. */
   chatBufferSize: number
-  /**
-   * Message text size in the chat feed, px. Everything else in a message -
-   * author, timestamp, badges, platform icon - is sized relative to it.
-   */
-  chatFontSize: number
-  /** Width of the chat column in the broadcast view, px. Drag the splitter. */
-  chatWidth: number
   /** Saved layouts the user can switch between. Always contains the built-in. */
   layouts: LayoutPreset[]
-  /** Which layout the live values above belong to. */
+  /** Which saved layout is selected. */
   activeLayoutId: string
-  showPreview: boolean
+  /**
+   * Unsaved edits sitting on top of the selected layout, or null when it is
+   * clean. Editing never writes through to a saved layout, so switching away
+   * and back always restores exactly what was saved.
+   */
+  draftLayout: LayoutValues | null
   theme: 'midnight' | 'nebula' | 'carbon'
 }
 
@@ -195,6 +226,48 @@ export interface ChatMessage {
   isModerator: boolean
   isSubscriber: boolean
   isOwner: boolean
+}
+
+/**
+ * Audience events that are not chat messages.
+ *
+ * Only kinds reachable without an account login are produced today: Twitch
+ * subs, gifts, raids and cheers arrive on the anonymous IRC connection, and
+ * YouTube super chats and memberships arrive on the same polled live-chat call
+ * as ordinary messages. Follows and donations need credentials Hydracast
+ * deliberately does not ask for, so `follow` and `donation` exist for a future
+ * source rather than being emitted now.
+ */
+export type ActivityKind =
+  | 'follow'
+  | 'subscription'
+  | 'gift'
+  | 'raid'
+  | 'cheer'
+  | 'donation'
+  | 'announcement'
+  | 'other'
+
+export interface ActivityEvent {
+  id: string
+  platformId: string
+  platformKind: PlatformKind
+  /** Epoch ms - the platform's own timestamp when it supplies one. */
+  timestamp: number
+  kind: ActivityKind
+  /** Who caused it: the subscriber, raider, cheerer. */
+  actor: string
+  /** One-line description, e.g. "resubscribed for 8 months at Tier 1". */
+  detail: string
+  /**
+   * Pre-formatted magnitude for display: "500 bits", "$5.00", "42 viewers".
+   * Kept as a string because each platform formats currency its own way.
+   */
+  amountLabel?: string
+  /** Numeric magnitude where one exists, for sorting or totals. */
+  amount?: number
+  /** A message the viewer attached, e.g. a resub or super chat comment. */
+  message?: string
 }
 
 export type ChatConnState = 'disconnected' | 'connecting' | 'connected' | 'error'
@@ -346,8 +419,6 @@ export const DEFAULT_SETTINGS: AppSettings = {
   autoReconnect: true,
   reconnectDelay: 5,
   chatBufferSize: 500,
-  chatFontSize: 13.5,
-  chatWidth: 380,
   layouts: [
     {
       id: DEFAULT_LAYOUT_ID,
@@ -355,24 +426,106 @@ export const DEFAULT_SETTINGS: AppSettings = {
       builtIn: true,
       chatFontSize: 13.5,
       chatWidth: 380,
-      showPreview: true
+      panels: DEFAULT_PANELS
     }
   ],
   activeLayoutId: DEFAULT_LAYOUT_ID,
-  showPreview: true,
+  draftLayout: null,
   theme: 'midnight'
 }
 
 /**
- * Picks just the layout-owned values off anything that carries them - the live
- * settings or a stored preset - so copying in either direction stays total.
+ * Picks just the layout-owned values off anything that carries them - a saved
+ * preset or a draft - so copying in either direction stays total.
  */
 export function layoutValuesOf(source: LayoutValues): LayoutValues {
   return {
     chatFontSize: source.chatFontSize,
     chatWidth: source.chatWidth,
-    showPreview: source.showPreview
+    panels: source.panels.map((p) => ({ ...p }))
   }
+}
+
+/** The arrangement currently on screen: the draft if one exists, else the saved layout. */
+export function activeLayout(settings: AppSettings): LayoutValues {
+  if (settings.draftLayout) return settings.draftLayout
+  const preset =
+    settings.layouts.find((l) => l.id === settings.activeLayoutId) ?? settings.layouts[0]
+  return layoutValuesOf(preset)
+}
+
+/** True when there are edits that have not been saved into a layout. */
+export function isLayoutDirty(settings: AppSettings): boolean {
+  return settings.draftLayout !== null
+}
+
+/** Name for the layout button, marked with (*) while there are unsaved edits. */
+export function layoutLabel(settings: AppSettings): string {
+  const preset = settings.layouts.find((l) => l.id === settings.activeLayoutId)
+  const name = preset?.name ?? 'Layout'
+  return isLayoutDirty(settings) ? `${name} (*)` : name
+}
+
+/** Panels of one region, in display order. Hidden panels are excluded. */
+export function panelsIn(values: LayoutValues, region: PanelRegion): PanelState[] {
+  return values.panels
+    .filter((p) => p.region === region && p.visible)
+    .sort((a, b) => a.order - b.order)
+}
+
+/**
+ * Applies a change to one panel, returning fresh layout values. Orders are
+ * renumbered per region so repeated moves cannot leave gaps or ties.
+ */
+export function withPanel(
+  values: LayoutValues,
+  id: PanelId,
+  patch: Partial<PanelState>
+): LayoutValues {
+  const panels = values.panels.map((p) => (p.id === id ? { ...p, ...patch } : p))
+  return { ...layoutValuesOf(values), panels: renumber(panels) }
+}
+
+/** Moves a panel up or down within its region. */
+export function movePanel(values: LayoutValues, id: PanelId, delta: -1 | 1): LayoutValues {
+  const panel = values.panels.find((p) => p.id === id)
+  if (!panel) return values
+  const siblings = values.panels
+    .filter((p) => p.region === panel.region)
+    .sort((a, b) => a.order - b.order)
+  const at = siblings.findIndex((p) => p.id === id)
+  const to = at + delta
+  if (at < 0 || to < 0 || to >= siblings.length) return values
+
+  const reordered = [...siblings]
+  const [moved] = reordered.splice(at, 1)
+  reordered.splice(to, 0, moved)
+
+  const orders = new Map(reordered.map((p, index) => [p.id, index]))
+  const panels = values.panels.map((p) =>
+    orders.has(p.id) ? { ...p, order: orders.get(p.id)! } : { ...p }
+  )
+  return { ...layoutValuesOf(values), panels }
+}
+
+/** Sends a panel to the other region, placing it last. */
+export function switchRegion(values: LayoutValues, id: PanelId): LayoutValues {
+  const panel = values.panels.find((p) => p.id === id)
+  if (!panel) return values
+  const region: PanelRegion = panel.region === 'left' ? 'right' : 'left'
+  const last = values.panels.filter((p) => p.region === region).length
+  return withPanel(values, id, { region, order: last })
+}
+
+function renumber(panels: PanelState[]): PanelState[] {
+  const out: PanelState[] = []
+  for (const region of ['left', 'right'] as PanelRegion[]) {
+    panels
+      .filter((p) => p.region === region)
+      .sort((a, b) => a.order - b.order)
+      .forEach((p, index) => out.push({ ...p, order: index }))
+  }
+  return out
 }
 
 /**
@@ -397,21 +550,43 @@ export function uniqueLayoutName(
 }
 
 /**
- * Guarantees the built-in layout exists and that the active id points at a real
- * layout.
+ * Guarantees the built-in layout exists, that every layout has a full panel
+ * set, and that the active id points at a real layout.
  *
  * Strictly additive: a user's own layouts are never rewritten, reordered or
- * dropped. A migration that edits saved values silently destroys a working
- * setup, and the user has no way to tell it happened.
+ * dropped, and missing panels are filled from the defaults rather than the
+ * whole set being replaced. A migration that edits saved values silently
+ * destroys a working setup, and the user has no way to tell it happened.
  */
 export function ensureLayouts(settings: AppSettings): AppSettings {
   const builtIn = DEFAULT_SETTINGS.layouts.find((l) => l.id === DEFAULT_LAYOUT_ID)!
-  const layouts = Array.isArray(settings.layouts) ? [...settings.layouts] : []
+
+  const fill = (values: LayoutValues): LayoutValues => {
+    const existing = Array.isArray(values.panels) ? values.panels : []
+    const panels = DEFAULT_PANELS.map(
+      (d) => existing.find((p) => p.id === d.id) ?? { ...d }
+    )
+    return {
+      chatFontSize: values.chatFontSize ?? builtIn.chatFontSize,
+      chatWidth: values.chatWidth ?? builtIn.chatWidth,
+      panels: renumber(panels)
+    }
+  }
+
+  const layouts = (Array.isArray(settings.layouts) ? settings.layouts : []).map((l) =>
+    l.id === DEFAULT_LAYOUT_ID ? { ...builtIn } : { ...l, ...fill(l) }
+  )
   if (!layouts.some((l) => l.id === DEFAULT_LAYOUT_ID)) layouts.unshift({ ...builtIn })
 
   const activeLayoutId = layouts.some((l) => l.id === settings.activeLayoutId)
     ? settings.activeLayoutId
     : DEFAULT_LAYOUT_ID
 
-  return { ...settings, layouts, activeLayoutId }
+  return {
+    ...settings,
+    layouts,
+    activeLayoutId,
+    draftLayout: settings.draftLayout ? fill(settings.draftLayout) : null
+  }
 }
+

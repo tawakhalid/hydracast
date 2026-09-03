@@ -2,6 +2,7 @@ import { app, BrowserWindow, dialog, ipcMain, screen, shell } from 'electron'
 import { randomUUID } from 'crypto'
 import path from 'path'
 import type {
+  ActivityEvent,
   AppConfig,
   AppSettings,
   ChatMessage,
@@ -123,6 +124,10 @@ async function bootServices(): Promise<void> {
   relays.on('status', () => send('snapshot', snapshot()))
 
   chat.on('message', (message: ChatMessage) => send('chat-message', message))
+  chat.on('activity', (event: ActivityEvent) => send('activity-event', event))
+  chat.on('unknown-event', (platform: string, name: string) =>
+    log('info', 'chat', `${platform}: unmapped event "${name}" - not shown in the activity feed`)
+  )
   chat.on('status', () => send('snapshot', snapshot()))
 
   relays.syncPlatforms(config.platforms)
@@ -243,6 +248,11 @@ function registerIpc(): void {
   ipcMain.handle('snapshot:get', () => snapshot())
   ipcMain.handle('logs:get', () => logs)
   ipcMain.handle('chat:history', () => chat.getHistory())
+  ipcMain.handle('activity:history', () => chat.getActivity())
+  ipcMain.handle('activity:clear', () => {
+    chat.clearActivity()
+    return true
+  })
   ipcMain.handle('chat:clear', () => {
     chat.clearHistory()
     return true

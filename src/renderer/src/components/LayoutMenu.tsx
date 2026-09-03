@@ -1,29 +1,39 @@
 import { useEffect, useRef, useState } from 'react'
 import { AnimatePresence, motion } from 'framer-motion'
 import type { LayoutPreset } from '@shared/types'
-import { CheckIcon, ChevronIcon, PlusIcon, TrashIcon } from '../icons'
+import { CheckIcon, ChevronIcon, PlusIcon, RefreshIcon, TrashIcon } from '../icons'
 
 interface Props {
   layouts: LayoutPreset[]
   activeId: string
+  /** True when there are edits not yet written into a saved layout. */
+  dirty: boolean
+  /** Active layout name, already marked with (*) when dirty. */
+  label: string
   onSelect: (id: string) => void
-  onCreate: (name: string) => void
+  onSave: () => void
+  onSaveAs: (name: string) => void
+  onRevert: () => void
   onRename: (id: string, name: string) => void
   onDelete: (id: string) => void
 }
 
 /**
- * Switches between saved layouts and manages them in place.
+ * Picks and manages layouts.
  *
- * The built-in layout is deliberately still selectable and adjustable - only
- * rename and delete are withheld - so there is always a layout to fall back to
- * without the controls appearing dead while it is active.
+ * Edits never write through to a saved layout - they collect as a draft marked
+ * `(*)` until saved deliberately. The built-in layout is therefore always
+ * exactly as it shipped, which is what makes selecting it a reliable way back.
  */
 export default function LayoutMenu({
   layouts,
   activeId,
+  dirty,
+  label,
   onSelect,
-  onCreate,
+  onSave,
+  onSaveAs,
+  onRevert,
   onRename,
   onDelete
 }: Props) {
@@ -33,9 +43,8 @@ export default function LayoutMenu({
   const [editName, setEditName] = useState('')
   const rootRef = useRef<HTMLDivElement>(null)
 
-  const active = layouts.find((l) => l.id === activeId) ?? layouts[0]
+  const active = layouts.find((l) => l.id === activeId)
 
-  // Close when the click lands anywhere else.
   useEffect(() => {
     if (!open) return
     const onDown = (e: MouseEvent): void => {
@@ -48,10 +57,10 @@ export default function LayoutMenu({
     return () => window.removeEventListener('mousedown', onDown)
   }, [open])
 
-  const commitNew = (): void => {
+  const commitSaveAs = (): void => {
     const name = newName.trim()
     if (!name) return
-    onCreate(name)
+    onSaveAs(name)
     setNewName('')
   }
 
@@ -63,11 +72,11 @@ export default function LayoutMenu({
   return (
     <div className="layout-menu" ref={rootRef}>
       <button
-        className={`btn sm ghost ${open ? 'active' : ''}`}
+        className={`btn sm ghost ${open ? 'active' : ''} ${dirty ? 'dirty' : ''}`}
         onClick={() => setOpen((v) => !v)}
-        title="Switch or save a layout"
+        title={dirty ? 'Layout has unsaved changes' : 'Switch or save a layout'}
       >
-        <span className="layout-name">{active?.name ?? 'Default'}</span>
+        <span className="layout-name">{label}</span>
         <motion.span animate={{ rotate: open ? 180 : 0 }} style={{ display: 'grid' }}>
           <ChevronIcon size={12} />
         </motion.span>
@@ -82,6 +91,32 @@ export default function LayoutMenu({
             exit={{ opacity: 0, y: -6, scale: 0.98 }}
             transition={{ duration: 0.16, ease: [0.22, 1, 0.36, 1] }}
           >
+            {dirty && (
+              <div className="layout-dirty">
+                <div className="layout-dirty-text">
+                  Unsaved changes to <strong>{active?.name}</strong>
+                </div>
+                <div className="layout-dirty-actions">
+                  <button
+                    className="btn sm"
+                    disabled={!!active?.builtIn}
+                    onClick={onSave}
+                    title={
+                      active?.builtIn
+                        ? 'The built-in layout cannot be overwritten - save these changes as a new layout instead'
+                        : `Save into ${active?.name}`
+                    }
+                  >
+                    Save
+                  </button>
+                  <button className="btn sm ghost" onClick={onRevert} title="Discard the changes">
+                    <RefreshIcon size={13} />
+                    Revert
+                  </button>
+                </div>
+              </div>
+            )}
+
             <div className="layout-pop-label">Layouts</div>
 
             {layouts.map((l) => (
@@ -105,6 +140,7 @@ export default function LayoutMenu({
                         {l.id === activeId && <CheckIcon size={11} />}
                       </span>
                       {l.name}
+                      {l.id === activeId && dirty && <span className="layout-star">(*)</span>}
                       {l.builtIn && <span className="layout-lock">built-in</span>}
                     </button>
 
@@ -141,22 +177,22 @@ export default function LayoutMenu({
                 value={newName}
                 onChange={(e) => setNewName(e.target.value)}
                 onKeyDown={(e) => {
-                  if (e.key === 'Enter') commitNew()
+                  if (e.key === 'Enter') commitSaveAs()
                 }}
               />
               <button
                 className="btn icon sm ghost"
                 disabled={!newName.trim()}
-                onClick={commitNew}
-                title="Save the current layout under this name"
+                onClick={commitSaveAs}
+                title="Save the current arrangement under this name"
               >
                 <PlusIcon size={14} />
               </button>
             </div>
 
             <div className="layout-hint">
-              Text size, chat width and preview visibility are saved into the selected layout as
-              you change them.
+              Selecting <strong>Default</strong> always restores the original arrangement - it is
+              never overwritten.
             </div>
           </motion.div>
         )}

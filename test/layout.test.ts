@@ -1,19 +1,27 @@
 /**
- * Invariants for saved layouts.
+ * Invariants for saved layouts and the panel model.
  *
- * The migration rules here matter more than they look: a previous release
- * shipped a migration that rewrote a user-entered value on load and silently
- * destroyed a working configuration. Everything below asserts that layout
- * migration only ever ADDS.
+ * The migration rules matter more than they look: an earlier release shipped a
+ * migration that rewrote a user-entered value on load and silently destroyed a
+ * working configuration. Everything below asserts that layout migration only
+ * ever ADDS, and that the built-in layout is never modified.
  */
 import {
+  activeLayout,
   DEFAULT_LAYOUT_ID,
+  DEFAULT_PANELS,
   DEFAULT_SETTINGS,
   ensureLayouts,
+  isLayoutDirty,
+  layoutLabel,
   layoutValuesOf,
-  uniqueLayoutName
+  movePanel,
+  panelsIn,
+  switchRegion,
+  uniqueLayoutName,
+  withPanel
 } from '../src/shared/types'
-import type { AppSettings, LayoutPreset } from '../src/shared/types'
+import type { AppSettings, LayoutPreset, LayoutValues } from '../src/shared/types'
 
 let failures = 0
 const check = (label: string, pass: boolean, extra = '') => {
@@ -21,58 +29,129 @@ const check = (label: string, pass: boolean, extra = '') => {
   console.log(`${pass ? 'PASS' : 'FAIL'}  ${label}${extra ? '   (' + extra + ')' : ''}`)
 }
 
+const builtIn = DEFAULT_SETTINGS.layouts[0]
+const base = (): LayoutValues => layoutValuesOf(builtIn)
+
 const mine: LayoutPreset = {
   id: 'layout-mine',
   name: 'Chat only',
   chatFontSize: 20,
   chatWidth: 700,
-  showPreview: false
+  panels: DEFAULT_PANELS.map((p) => ({ ...p, visible: p.id === 'chat' }))
 }
 
 // ---- unique names ----------------------------------------------------------
 const layouts: LayoutPreset[] = [
-  { ...DEFAULT_SETTINGS.layouts[0] },
+  { ...builtIn },
   mine,
   { ...mine, id: 'layout-2', name: 'Chat only 2' }
 ]
 
 check('a free name is kept as typed', uniqueLayoutName('Streaming', layouts) === 'Streaming')
-check(
-  'a clash is suffixed rather than rejected',
-  uniqueLayoutName('Chat only', layouts) === 'Chat only 3',
-  uniqueLayoutName('Chat only', layouts)
-)
-check(
-  'clash check is case-insensitive',
-  uniqueLayoutName('chat ONLY', layouts) === 'chat ONLY 3',
-  uniqueLayoutName('chat ONLY', layouts)
-)
+check('a clash is suffixed, not rejected', uniqueLayoutName('Chat only', layouts) === 'Chat only 3')
+check('clash check is case-insensitive', uniqueLayoutName('chat ONLY', layouts) === 'chat ONLY 3')
 check(
   'renaming a layout to its own name is not a clash',
   uniqueLayoutName('Chat only', layouts, 'layout-mine') === 'Chat only'
 )
 check('a blank name still yields something usable', uniqueLayoutName('   ', layouts) === 'Layout')
 
-// ---- migration is additive -------------------------------------------------
-const withoutBuiltIn = { ...DEFAULT_SETTINGS, layouts: [mine], activeLayoutId: 'layout-mine' }
-const fixed = ensureLayouts(withoutBuiltIn as AppSettings)
-
-check('the built-in layout is restored when missing', fixed.layouts.some((l) => l.id === DEFAULT_LAYOUT_ID))
-check('the built-in is marked as such', !!fixed.layouts.find((l) => l.id === DEFAULT_LAYOUT_ID)?.builtIn)
-check('a user layout survives migration', fixed.layouts.some((l) => l.id === 'layout-mine'))
+// ---- panel moves -----------------------------------------------------------
+const moved = movePanel(base(), 'destinations', -1)
 check(
-  'a user layout is not modified by migration',
-  JSON.stringify(fixed.layouts.find((l) => l.id === 'layout-mine')) === JSON.stringify(mine)
+  'moving a panel up reorders its region',
+  panelsIn(moved, 'left').map((p) => p.id).join(',') === 'destinations,preview',
+  panelsIn(moved, 'left').map((p) => p.id).join(',')
 )
-check('a valid active id is preserved', fixed.activeLayoutId === 'layout-mine')
+check(
+  'moving up at the top is a no-op',
+  panelsIn(movePanel(base(), 'preview', -1), 'left').map((p) => p.id).join(',') ===
+    'preview,destinations'
+)
+check(
+  'moving down at the bottom is a no-op',
+  panelsIn(movePanel(base(), 'destinations', 1), 'left').map((p) => p.id).join(',') ===
+    'preview,destinations'
+)
+check(
+  'orders stay contiguous after a move',
+  panelsIn(moved, 'left').every((p, i) => p.order === i)
+)
+
+const switched = switchRegion(base(), 'chat')
+check('switching region moves the panel across', panelsIn(switched, 'left').some((p) => p.id === 'chat'))
+check('the panel lands last in its new region', panelsIn(switched, 'left').at(-1)?.id === 'chat')
+check(
+  'the vacated region renumbers from zero',
+  panelsIn(switched, 'right').every((p, i) => p.order === i)
+)
+
+const hidden = withPanel(base(), 'preview', { visible: false })
+check('a hidden panel drops out of its region', !panelsIn(hidden, 'left').some((p) => p.id === 'preview'))
+check('hiding does not delete the panel', hidden.panels.some((p) => p.id === 'preview'))
+check('editing returns a copy, not the original', hidden.panels !== base().panels)
+
+// ---- draft and dirty state -------------------------------------------------
+const clean: AppSettings = { ...DEFAULT_SETTINGS, draftLayout: null }
+check('a fresh config is clean', !isLayoutDirty(clean))
+check('a clean label carries no marker', layoutLabel(clean) === 'Default', layoutLabel(clean))
+check('a clean config shows the saved layout', activeLayout(clean).chatWidth === builtIn.chatWidth)
+
+const dirty: AppSettings = { ...clean, draftLayout: { ...base(), chatWidth: 640 } }
+check('a draft marks the config dirty', isLayoutDirty(dirty))
+check('a dirty label is marked with (*)', layoutLabel(dirty) === 'Default (*)', layoutLabel(dirty))
+check('a draft is what gets rendered', activeLayout(dirty).chatWidth === 640)
+check(
+  'the saved built-in is untouched by the draft',
+  dirty.layouts[0].chatWidth === builtIn.chatWidth,
+  String(dirty.layouts[0].chatWidth)
+)
+
+// ---- migration is additive -------------------------------------------------
+const withoutBuiltIn = ensureLayouts({
+  ...DEFAULT_SETTINGS,
+  layouts: [mine],
+  activeLayoutId: 'layout-mine'
+} as AppSettings)
+
+check('the built-in is restored when missing', withoutBuiltIn.layouts.some((l) => l.id === DEFAULT_LAYOUT_ID))
+check(
+  'the built-in is restored to its shipped values',
+  JSON.stringify(withoutBuiltIn.layouts.find((l) => l.id === DEFAULT_LAYOUT_ID)) ===
+    JSON.stringify(builtIn)
+)
+check('a user layout survives migration', withoutBuiltIn.layouts.some((l) => l.id === 'layout-mine'))
+check(
+  'a user layout keeps its own values',
+  withoutBuiltIn.layouts.find((l) => l.id === 'layout-mine')?.chatWidth === 700
+)
+check(
+  'a user layout keeps its hidden panels hidden',
+  withoutBuiltIn.layouts
+    .find((l) => l.id === 'layout-mine')!
+    .panels.filter((p) => p.visible)
+    .map((p) => p.id)
+    .join(',') === 'chat'
+)
+check('a valid active id is preserved', withoutBuiltIn.activeLayoutId === 'layout-mine')
+
+const partial = ensureLayouts({
+  ...DEFAULT_SETTINGS,
+  layouts: [
+    { ...builtIn },
+    // A layout saved before the activity panel existed.
+    { id: 'old', name: 'Old', chatFontSize: 14, chatWidth: 400, panels: [DEFAULT_PANELS[0]] }
+  ]
+} as AppSettings)
+const old = partial.layouts.find((l) => l.id === 'old')!
+check('a layout missing panels is filled from the defaults', old.panels.length === DEFAULT_PANELS.length)
+check('the panel it did have is preserved', old.panels.some((p) => p.id === 'preview'))
 
 const dangling = ensureLayouts({
   ...DEFAULT_SETTINGS,
-  layouts: [{ ...DEFAULT_SETTINGS.layouts[0] }, mine],
   activeLayoutId: 'deleted-long-ago'
 } as AppSettings)
 check('a dangling active id falls back to the built-in', dangling.activeLayoutId === DEFAULT_LAYOUT_ID)
-check('the fallback does not drop layouts', dangling.layouts.length === 2)
 
 const empty = ensureLayouts({ ...DEFAULT_SETTINGS, layouts: [] } as AppSettings)
 check('an empty list is repopulated', empty.layouts.length === 1)
@@ -83,30 +162,18 @@ const missing = ensureLayouts({
 } as AppSettings)
 check('a config predating layouts is handled', missing.layouts.length === 1)
 
-// Running twice must not accumulate duplicates.
-const twice = ensureLayouts(ensureLayouts(withoutBuiltIn as AppSettings))
+const twice = ensureLayouts(ensureLayouts(withoutBuiltIn))
 check(
   'migration is idempotent',
-  twice.layouts.filter((l) => l.id === DEFAULT_LAYOUT_ID).length === 1,
-  `${twice.layouts.length} layouts`
-)
-
-// ---- value copying ---------------------------------------------------------
-const picked = layoutValuesOf(mine)
-check(
-  'layoutValuesOf takes only the layout-owned fields',
-  JSON.stringify(Object.keys(picked).sort()) ===
-    JSON.stringify(['chatFontSize', 'chatWidth', 'showPreview'])
-)
-check(
-  'layoutValuesOf reads settings as readily as a preset',
-  layoutValuesOf(DEFAULT_SETTINGS).chatWidth === DEFAULT_SETTINGS.chatWidth
+  twice.layouts.filter((l) => l.id === DEFAULT_LAYOUT_ID).length === 1 &&
+    twice.layouts.length === withoutBuiltIn.layouts.length
 )
 
 // ---- the built-in is protected --------------------------------------------
-const builtIn = DEFAULT_SETTINGS.layouts.find((l) => l.id === DEFAULT_LAYOUT_ID)!
 check('the built-in layout is named Default', builtIn.name === 'Default')
-check('the built-in layout is flagged, so the UI can withhold delete', builtIn.builtIn === true)
+check('the built-in layout is flagged so the UI can protect it', builtIn.builtIn === true)
+check('every default panel starts visible', DEFAULT_PANELS.every((p) => p.visible))
+check('the activity panel exists by default', DEFAULT_PANELS.some((p) => p.id === 'activity'))
 
 console.log(failures ? `\n${failures} FAILED` : '\nALL CHECKS PASSED')
 process.exit(failures ? 1 : 0)

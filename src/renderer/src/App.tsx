@@ -1,17 +1,34 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { AnimatePresence, motion } from 'framer-motion'
 import type {
+  ActivityEvent,
   AppConfig,
   AppSettings,
   ChatMessage,
-  LayoutPreset,
+  LayoutValues,
   LogEntry,
+  PanelId,
+  PanelState,
   PlatformKind,
   Snapshot
 } from '@shared/types'
-import { DEFAULT_LAYOUT_ID, layoutValuesOf, uniqueLayoutName } from '@shared/types'
+import {
+  activeLayout,
+  DEFAULT_LAYOUT_ID,
+  isLayoutDirty,
+  layoutLabel,
+  layoutValuesOf,
+  movePanel,
+  panelsIn,
+  PANEL_TITLES,
+  switchRegion,
+  uniqueLayoutName,
+  withPanel
+} from '@shared/types'
 import {
   AlertIcon,
+  BellIcon,
+  PenIcon,
   BroadcastIcon,
   ChatIcon,
   CheckIcon,
@@ -27,10 +44,13 @@ import {
 } from './icons'
 import PreviewPane from './components/PreviewPane'
 import PlatformCard from './components/PlatformCard'
+import ActivityPane from './components/ActivityPane'
+import LayoutMenu from './components/LayoutMenu'
+import PanelFrame from './components/PanelFrame'
 import ChatPane from './components/ChatPane'
 import SettingsModal from './components/SettingsModal'
 
-type View = 'broadcast' | 'chat' | 'logs'
+type View = 'broadcast' | 'logs'
 
 /** Bounds for the draggable chat column, px. */
 const MIN_CHAT_W = 280
@@ -67,6 +87,8 @@ export default function App() {
   const [snapshot, setSnapshot] = useState<Snapshot>(emptySnapshot)
   const [messages, setMessages] = useState<ChatMessage[]>([])
   const [logs, setLogs] = useState<LogEntry[]>([])
+  const [activity, setActivity] = useState<ActivityEvent[]>([])
+  const [editing, setEditing] = useState(false)
   const workspaceRef = useRef<HTMLDivElement>(null)
   const [dragWidth, setDragWidth] = useState<number | null>(null)
   const [resizing, setResizing] = useState(false)
@@ -96,6 +118,7 @@ export default function App() {
       setSnapshot(await api.getSnapshot())
       setMessages(await api.getChatHistory())
       setLogs(await api.getLogs())
+      setActivity(await api.getActivity())
       setIngestInfo(await api.getIngestInfo())
       setFfmpegPath(await api.getFfmpegPath())
       setEncoders(await api.detectEncoders())
@@ -104,6 +127,7 @@ export default function App() {
     const offSnapshot = api.onSnapshot(setSnapshot)
     const offChat = api.onChatMessage((m) => setMessages((prev) => [...prev.slice(-499), m]))
     const offLog = api.onLog((l) => setLogs((prev) => [...prev.slice(-399), l]))
+    const offActivity = api.onActivity((e) => setActivity((prev) => [...prev.slice(-399), e]))
     const offWindow = api.onWindowState((s) => setMaximized(s.maximized))
     const offPublish = api.onIngestPublish((publishing) =>
       toast(publishing ? 'Streamlabs connected' : 'Streamlabs disconnected', publishing ? 'ok' : 'err')
@@ -113,6 +137,7 @@ export default function App() {
       offSnapshot()
       offChat()
       offLog()
+      offActivity()
       offWindow()
       offPublish()
     }
@@ -120,11 +145,11 @@ export default function App() {
 
   // Track unread chat while the user is on another view.
   useEffect(() => {
-    if (view === 'chat') setUnreadChat(0)
+    if (view === 'broadcast') setUnreadChat(0)
   }, [view, messages.length])
 
   useEffect(() => {
-    if (view !== 'chat') setUnreadChat((n) => n + 1)
+    if (view !== 'broadcast') setUnreadChat((n) => n + 1)
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [messages.length])
 
@@ -161,51 +186,69 @@ export default function App() {
     toast(`${label} copied`)
   }
 
-  /**
-   * Writes settings, mirroring any layout-owned value into the active layout so
-   * that adjusting a control edits the layout you are looking at rather than
-   * drifting away from it.
-   */
+  /** Flattens the activity log into something pasteable into a bug report. */
+  const logsAsText = (entries: LogEntry[]): string =>
+    entries
+      .map(
+        (l) =>
+          `${new Date(l.timestamp).toLocaleTimeString('en-GB')}  ${l.level.padEnd(7)} ${l.scope.padEnd(6)} ${l.message}`
+      )
+      .join('\n')
+
   const patchSettings = (patch: Partial<AppSettings>): void => {
     if (!config) return
-    const settings = { ...config.settings, ...patch }
-    const touchesLayout =
-      'chatFontSize' in patch || 'chatWidth' in patch || 'showPreview' in patch
-    const layouts = touchesLayout
-      ? settings.layouts.map((l) =>
-          l.id === settings.activeLayoutId ? { ...l, ...layoutValuesOf(settings) } : l
-        )
-      : settings.layouts
-    void saveConfig({ ...config, settings: { ...settings, layouts } })
+    void saveConfig({ ...config, settings: { ...config.settings, ...patch } })
   }
+
+  /**
+   * Records a layout edit as an unsaved draft rather than writing it into the
+   * selected layout. Nothing is ever saved by accident, and Default in
+   * particular stays exactly as it shipped.
+   */
+  const editLayout = (next: LayoutValues): void => {
+    patchSettings({ draftLayout: layoutValuesOf(next) })
+  }
+
+  const patchPanel = (id: PanelId, patch: Partial<PanelState>): void =>
+    editLayout(withPanel(layout, id, patch))
 
   const selectLayout = (id: string): void => {
     if (!config) return
-    const preset = config.settings.layouts.find((l) => l.id === id)
-    if (!preset) return
-    void saveConfig({
-      ...config,
-      settings: { ...config.settings, activeLayoutId: id, ...layoutValuesOf(preset) }
-    })
+    // Selecting always discards the draft, so a layout is what it says it is.
+    patchSettings({ activeLayoutId: id, draftLayout: null })
   }
 
-  const createLayout = (name: string): void => {
+  const saveLayout = (): void => {
+    if (!config?.settings.draftLayout) return
+    const active = config.settings.layouts.find((l) => l.id === config.settings.activeLayoutId)
+    if (!active || active.builtIn) return
+    const values = layoutValuesOf(config.settings.draftLayout)
+    patchSettings({
+      layouts: config.settings.layouts.map((l) => (l.id === active.id ? { ...l, ...values } : l)),
+      draftLayout: null
+    })
+    toast(`Saved "${active.name}"`)
+  }
+
+  const saveLayoutAs = (name: string): void => {
     if (!config) return
     const unique = uniqueLayoutName(name, config.settings.layouts)
-    const preset: LayoutPreset = {
+    const preset = {
       id: `layout-${Date.now().toString(36)}`,
       name: unique,
-      ...layoutValuesOf(config.settings)
+      ...layoutValuesOf(layout)
     }
-    void saveConfig({
-      ...config,
-      settings: {
-        ...config.settings,
-        layouts: [...config.settings.layouts, preset],
-        activeLayoutId: preset.id
-      }
+    patchSettings({
+      layouts: [...config.settings.layouts, preset],
+      activeLayoutId: preset.id,
+      draftLayout: null
     })
     toast(`Layout "${unique}" saved`)
+  }
+
+  const revertLayout = (): void => {
+    patchSettings({ draftLayout: null })
+    toast('Changes discarded')
   }
 
   const renameLayout = (id: string, name: string): void => {
@@ -213,39 +256,30 @@ export default function App() {
     const target = config.settings.layouts.find((l) => l.id === id)
     if (!target || target.builtIn) return
     const unique = uniqueLayoutName(name, config.settings.layouts, id)
-    void saveConfig({
-      ...config,
-      settings: {
-        ...config.settings,
-        layouts: config.settings.layouts.map((l) => (l.id === id ? { ...l, name: unique } : l))
-      }
+    patchSettings({
+      layouts: config.settings.layouts.map((l) => (l.id === id ? { ...l, name: unique } : l))
     })
   }
 
   const deleteLayout = (id: string): void => {
     if (!config) return
     const target = config.settings.layouts.find((l) => l.id === id)
-    // The built-in is the guaranteed fallback and is never removable.
+    // The built-in is the guaranteed way back and is never removable.
     if (!target || target.builtIn) return
     const layouts = config.settings.layouts.filter((l) => l.id !== id)
-    const fallback = layouts.find((l) => l.id === DEFAULT_LAYOUT_ID) ?? layouts[0]
     const wasActive = config.settings.activeLayoutId === id
-    void saveConfig({
-      ...config,
-      settings: {
-        ...config.settings,
-        layouts,
-        activeLayoutId: wasActive ? fallback.id : config.settings.activeLayoutId,
-        ...(wasActive ? layoutValuesOf(fallback) : {})
-      }
+    patchSettings({
+      layouts,
+      activeLayoutId: wasActive ? DEFAULT_LAYOUT_ID : config.settings.activeLayoutId,
+      draftLayout: wasActive ? null : config.settings.draftLayout
     })
     toast(`Layout "${target.name}" removed`)
   }
 
   /**
-   * Drags the chat column wider or narrower. The width is tracked locally for
-   * the duration of the drag and written to the config once on release, so a
-   * resize costs one IPC round trip rather than one per pointer move.
+   * Drags the right-hand region wider or narrower. The width is tracked locally
+   * for the duration of the drag and committed once on release, so a resize
+   * costs one write rather than one per pointer move.
    */
   const startResize = (e: React.PointerEvent): void => {
     e.preventDefault()
@@ -263,24 +297,18 @@ export default function App() {
       const next = clamp(ev.clientX)
       setResizing(false)
       setDragWidth(null)
-      patchSettings({ chatWidth: next })
+      editLayout({ ...layout, chatWidth: next })
     }
     window.addEventListener('pointermove', onMove)
     window.addEventListener('pointerup', onUp)
   }
 
-  /** Flattens the activity log into something pasteable into a bug report. */
-  const logsAsText = (entries: LogEntry[]): string =>
-    entries
-      .map(
-        (l) =>
-          `${new Date(l.timestamp).toLocaleTimeString('en-GB')}  ${l.level.padEnd(7)} ${l.scope.padEnd(6)} ${l.message}`
-      )
-      .join('\n')
-
   const platforms = config?.platforms ?? []
+  const layout: LayoutValues = config
+    ? activeLayout(config.settings)
+    : { chatFontSize: 13.5, chatWidth: MIN_CHAT_W, panels: [] }
   // The dragged width wins while a drag is in flight; the saved one otherwise.
-  const chatWidth = dragWidth ?? config?.settings.chatWidth ?? MIN_CHAT_W
+  const chatWidth = dragWidth ?? layout.chatWidth
   const liveCount = useMemo(
     () => Object.values(snapshot.relays).filter((r) => r.status === 'live').length,
     [snapshot.relays]
@@ -316,6 +344,110 @@ export default function App() {
           <div className="waiting-ring" />
         </div>
       </div>
+    )
+  }
+
+  const leftPanels = config ? panelsIn(layout, 'left') : []
+  const rightPanels = config ? panelsIn(layout, 'right') : []
+
+  /** Renders one panel inside the shared shell. */
+  const renderPanel = (panel: PanelState): JSX.Element => {
+    const siblings = panelsIn(layout, panel.region)
+    const at = siblings.findIndex((p) => p.id === panel.id)
+
+    let body: JSX.Element | null = null
+    let actions: JSX.Element | null = null
+
+    if (panel.id === 'preview') {
+      body = (
+        <PreviewPane
+          ingest={snapshot.ingest}
+          broadcasting={snapshot.broadcasting}
+          ingestUrl={ingestInfo.ingestUrl}
+          streamKey={ingestInfo.streamKey}
+          destinationCount={liveCount}
+        />
+      )
+    } else if (panel.id === 'destinations') {
+      body = (
+        <div className="platforms">
+          <AnimatePresence mode="popLayout">
+            {platforms.map((p) => (
+              <PlatformCard
+                key={p.id}
+                platform={p}
+                stats={snapshot.relays[p.id]}
+                encoders={encoders}
+                onPatch={(patch) => void patchPlatform(p.id, patch)}
+                onStart={() => void window.hydracast.startRelay(p.id)}
+                onStop={() => void window.hydracast.stopRelay(p.id)}
+                onConfigure={() => {
+                  setFocusPlatform(p.id)
+                  setSettingsOpen(true)
+                }}
+              />
+            ))}
+          </AnimatePresence>
+
+          {platforms.length === 0 && (
+            <div className="empty-state">
+              <AlertIcon size={26} />
+              <div>No destinations yet.</div>
+              <button className="btn primary" onClick={() => setSettingsOpen(true)}>
+                Add your first platform
+              </button>
+            </div>
+          )}
+        </div>
+      )
+    } else if (panel.id === 'chat') {
+      body = (
+        <ChatPane
+          messages={messages}
+          platforms={platforms}
+          chatStatus={snapshot.chatStatus}
+          fontSize={layout.chatFontSize}
+          onFontSize={(chatFontSize) => editLayout({ ...layout, chatFontSize })}
+          onClear={() => {
+            void window.hydracast.clearChat()
+            setMessages([])
+          }}
+          onReconnect={(id) => {
+            void window.hydracast.reconnectChat(id)
+            toast('Reconnecting chat')
+          }}
+        />
+      )
+    } else {
+      body = (
+        <ActivityPane
+          events={activity}
+          platforms={platforms}
+          fontSize={layout.chatFontSize}
+          onClear={() => {
+            void window.hydracast.clearActivity()
+            setActivity([])
+          }}
+        />
+      )
+    }
+
+    return (
+      <PanelFrame
+        key={panel.id}
+        panel={panel}
+        title={PANEL_TITLES[panel.id]}
+        editing={editing}
+        canMoveUp={at > 0}
+        canMoveDown={at >= 0 && at < siblings.length - 1}
+        onToggleCollapse={() => patchPanel(panel.id, { collapsed: !panel.collapsed })}
+        onMove={(delta) => editLayout(movePanel(layout, panel.id, delta))}
+        onSwitchRegion={() => editLayout(switchRegion(layout, panel.id))}
+        onHide={() => patchPanel(panel.id, { visible: false })}
+        actions={actions}
+      >
+        {body}
+      </PanelFrame>
     )
   }
 
@@ -360,6 +492,28 @@ export default function App() {
           )}
         </div>
 
+        <div className="titlebar-tools">
+          <LayoutMenu
+            layouts={config.settings.layouts}
+            activeId={config.settings.activeLayoutId}
+            dirty={isLayoutDirty(config.settings)}
+            label={layoutLabel(config.settings)}
+            onSelect={selectLayout}
+            onSave={saveLayout}
+            onSaveAs={saveLayoutAs}
+            onRevert={revertLayout}
+            onRename={renameLayout}
+            onDelete={deleteLayout}
+          />
+          <button
+            className={`btn icon sm ghost ${editing ? 'active' : ''}`}
+            onClick={() => setEditing((v) => !v)}
+            title={editing ? 'Finish editing the layout' : 'Edit layout'}
+          >
+            <PenIcon size={15} />
+          </button>
+        </div>
+
         <div className="win-controls">
           <button className="win-btn" onClick={() => window.hydracast.minimize()}>
             <MinimizeIcon />
@@ -378,9 +532,8 @@ export default function App() {
         <div className="rail">
           {(
             [
-              ['broadcast', BroadcastIcon, 'Broadcast'],
-              ['chat', ChatIcon, 'Chat'],
-              ['logs', LogsIcon, 'Activity']
+              ['broadcast', BroadcastIcon, 'Workspace'],
+              ['logs', LogsIcon, 'Logs']
             ] as [View, typeof BroadcastIcon, string][]
           ).map(([id, Icon, label]) => (
             <button
@@ -391,7 +544,7 @@ export default function App() {
             >
               {view === id && <motion.span className="rail-indicator" layoutId="rail-indicator" />}
               <Icon size={19} />
-              {id === 'chat' && unreadChat > 0 && view !== 'chat' && (
+              {id === 'broadcast' && unreadChat > 0 && view !== 'broadcast' && (
                 <span className="rail-badge">{unreadChat > 99 ? '99+' : unreadChat}</span>
               )}
             </button>
@@ -499,107 +652,30 @@ export default function App() {
           {/* views */}
           {view === 'broadcast' && (
             <div className="workspace" ref={workspaceRef}>
-              <div className="workspace-left">
-                {config.settings.showPreview && (
-                  <PreviewPane
-                    ingest={snapshot.ingest}
-                    broadcasting={snapshot.broadcasting}
-                    ingestUrl={ingestInfo.ingestUrl}
-                    streamKey={ingestInfo.streamKey}
-                    destinationCount={liveCount}
+              <div className="workspace-left">{leftPanels.map(renderPanel)}</div>
+
+              {rightPanels.length > 0 && (
+                <>
+                  <div
+                    className={`splitter ${resizing ? 'dragging' : ''}`}
+                    onPointerDown={startResize}
+                    title="Drag to resize"
                   />
-                )}
+                  <div className="chat-column" style={{ width: chatWidth }}>
+                    {rightPanels.map(renderPanel)}
+                  </div>
+                </>
+              )}
 
-                <div className="platforms">
-                  <AnimatePresence mode="popLayout">
-                    {platforms.map((p) => (
-                      <PlatformCard
-                        key={p.id}
-                        platform={p}
-                        stats={snapshot.relays[p.id]}
-                        encoders={encoders}
-                        onPatch={(patch) => void patchPlatform(p.id, patch)}
-                        onStart={() => void window.hydracast.startRelay(p.id)}
-                        onStop={() => void window.hydracast.stopRelay(p.id)}
-                        onConfigure={() => {
-                          setFocusPlatform(p.id)
-                          setSettingsOpen(true)
-                        }}
-                      />
-                    ))}
-                  </AnimatePresence>
-
-                  {platforms.length === 0 && (
-                    <div className="empty-state">
-                      <AlertIcon size={26} />
-                      <div>No destinations yet.</div>
-                      <button className="btn primary" onClick={() => setSettingsOpen(true)}>
-                        Add your first platform
-                      </button>
-                    </div>
-                  )}
+              {leftPanels.length === 0 && rightPanels.length === 0 && (
+                <div className="empty-state" style={{ flex: 1 }}>
+                  <AlertIcon size={26} />
+                  <div>Every panel is hidden.</div>
+                  <button className="btn primary" onClick={() => selectLayout(DEFAULT_LAYOUT_ID)}>
+                    Restore the Default layout
+                  </button>
                 </div>
-              </div>
-
-              <div
-                className={`splitter ${resizing ? 'dragging' : ''}`}
-                onPointerDown={startResize}
-                title="Drag to resize the chat column"
-              />
-
-              <div className="chat-column" style={{ width: chatWidth }}>
-                <ChatPane
-                  messages={messages}
-                  platforms={platforms}
-                  chatStatus={snapshot.chatStatus}
-                  fontSize={config.settings.chatFontSize}
-                  onFontSize={(chatFontSize) => patchSettings({ chatFontSize })}
-                  layouts={config.settings.layouts}
-                  activeLayoutId={config.settings.activeLayoutId}
-                  onSelectLayout={selectLayout}
-                  onCreateLayout={createLayout}
-                  onRenameLayout={renameLayout}
-                  onDeleteLayout={deleteLayout}
-                  showPreview={config.settings.showPreview}
-                  onTogglePreview={() =>
-                    patchSettings({ showPreview: !config.settings.showPreview })
-                  }
-                  onClear={() => {
-                    void window.hydracast.clearChat()
-                    setMessages([])
-                  }}
-                  onReconnect={(id) => {
-                    void window.hydracast.reconnectChat(id)
-                    toast('Reconnecting chat')
-                  }}
-                />
-              </div>
-            </div>
-          )}
-
-          {view === 'chat' && (
-            <div className="workspace">
-              <ChatPane
-                messages={messages}
-                platforms={platforms}
-                chatStatus={snapshot.chatStatus}
-                fontSize={config.settings.chatFontSize}
-                onFontSize={(chatFontSize) => patchSettings({ chatFontSize })}
-                layouts={config.settings.layouts}
-                activeLayoutId={config.settings.activeLayoutId}
-                onSelectLayout={selectLayout}
-                onCreateLayout={createLayout}
-                onRenameLayout={renameLayout}
-                onDeleteLayout={deleteLayout}
-                onClear={() => {
-                  void window.hydracast.clearChat()
-                  setMessages([])
-                }}
-                onReconnect={(id) => {
-                  void window.hydracast.reconnectChat(id)
-                  toast('Reconnecting chat')
-                }}
-              />
+              )}
             </div>
           )}
 
@@ -607,7 +683,7 @@ export default function App() {
             <div className="panel logs">
               <div className="panel-head">
                 <LogsIcon size={16} />
-                <span className="panel-title">Activity</span>
+                <span className="panel-title">Logs</span>
                 <div className="spacer" />
                 <button
                   className="btn sm ghost"

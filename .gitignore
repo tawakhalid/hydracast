@@ -5,6 +5,7 @@ dist/
 test/.pipeline.cjs
 test/.kick.cjs
 test/.layout.cjs
+test/.activity.cjs
 *.tsbuildinfo
 *.log
 .env

@@ -812,12 +812,10 @@ export default function SettingsModal({
                   <option value="carbon">Carbon (blue)</option>
                 </select>
               </div>
-              <Check
-                checked={draft.settings.showPreview}
-                onChange={(v) => patchSettings({ showPreview: v })}
-                title="Show stream preview"
-                description="Disable to save a little CPU on lower-end machines"
-              />
+              <div className="hint">
+                Panel visibility and arrangement live in the layout menu in the title bar - press
+                the pen to edit, then save.
+              </div>
             </>
           )}
         </div>

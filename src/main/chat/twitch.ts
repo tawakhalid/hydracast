@@ -1,8 +1,27 @@
 import { EventEmitter } from 'events'
 import WebSocket from 'ws'
-import type { ChatMessage, Platform } from '@shared/types'
+import type { ActivityEvent, ActivityKind, ChatMessage, Platform } from '@shared/types'
 
 const IRC_URL = 'wss://irc-ws.chat.twitch.tv:443'
+
+/**
+ * Twitch delivers subs, gifts and raids as USERNOTICE on the same anonymous
+ * connection as chat, so the whole set is readable with no token. Follows are
+ * the one thing missing - they exist only in EventSub, which requires OAuth.
+ */
+const NOTICE_KINDS: Record<string, ActivityKind> = {
+  sub: 'subscription',
+  resub: 'subscription',
+  subgift: 'gift',
+  submysterygift: 'gift',
+  anonsubgift: 'gift',
+  anonsubmysterygift: 'gift',
+  giftpaidupgrade: 'subscription',
+  anongiftpaidupgrade: 'subscription',
+  primepaidupgrade: 'subscription',
+  raid: 'raid',
+  announcement: 'announcement'
+}
 
 /** Parses the IRCv3 tag blob that precedes a Twitch PRIVMSG. */
 function parseTags(raw: string): Record<string, string> {
@@ -83,6 +102,13 @@ export class TwitchChat extends EventEmitter {
         continue
       }
 
+      // @tags :tmi.twitch.tv USERNOTICE #channel [:message]
+      const notice = line.match(/^(@[^ ]+ )?:tmi\.twitch\.tv USERNOTICE #([^ ]+)(?: :(.*))?$/)
+      if (notice) {
+        this.handleNotice(notice[1] ? parseTags(notice[1].slice(1).trim()) : {}, notice[3])
+        continue
+      }
+
       // @tags :nick!user@host PRIVMSG #channel :message
       const match = line.match(/^(@[^ ]+ )?:([^!]+)![^ ]+ PRIVMSG #([^ ]+) :(.*)$/)
       if (!match) continue
@@ -110,7 +136,64 @@ export class TwitchChat extends EventEmitter {
         isOwner: badges.includes('broadcaster')
       }
       this.emit('message', message)
+
+      // Cheers ride along on an ordinary message rather than a USERNOTICE.
+      const bits = Number(tags['bits'])
+      if (bits > 0) {
+        this.emit('activity', {
+          id: `${message.id}-bits`,
+          platformId: this.platform.id,
+          platformKind: 'twitch',
+          timestamp: message.timestamp,
+          kind: 'cheer',
+          actor: message.author,
+          detail: `cheered ${bits} bits`,
+          amount: bits,
+          amountLabel: `${bits} bits`,
+          message: text
+        } satisfies ActivityEvent)
+      }
     }
+  }
+
+  /** Turns a USERNOTICE into an activity event. */
+  private handleNotice(tags: Record<string, string>, userMessage?: string): void {
+    const msgId = tags['msg-id'] || ''
+    const kind = NOTICE_KINDS[msgId]
+    if (!kind) return
+
+    const actor = tags['display-name'] || tags['login'] || 'someone'
+    // Twitch ships a ready-made human sentence; prefer it over rebuilding one.
+    const detail = (tags['system-msg'] || msgId).trim()
+
+    let amount: number | undefined
+    let amountLabel: string | undefined
+    if (kind === 'raid') {
+      amount = Number(tags['msg-param-viewerCount']) || undefined
+      if (amount) amountLabel = `${amount} viewer${amount === 1 ? '' : 's'}`
+    } else if (msgId === 'submysterygift' || msgId === 'anonsubmysterygift') {
+      amount = Number(tags['msg-param-mass-gift-count']) || undefined
+      if (amount) amountLabel = `${amount} sub${amount === 1 ? '' : 's'}`
+    } else {
+      const months = Number(tags['msg-param-cumulative-months'])
+      if (months > 0) {
+        amount = months
+        amountLabel = `${months} month${months === 1 ? '' : 's'}`
+      }
+    }
+
+    this.emit('activity', {
+      id: tags['id'] || `${Date.now()}-${Math.random().toString(36).slice(2)}`,
+      platformId: this.platform.id,
+      platformKind: 'twitch',
+      timestamp: tags['tmi-sent-ts'] ? Number(tags['tmi-sent-ts']) : Date.now(),
+      kind,
+      actor,
+      detail,
+      amount,
+      amountLabel,
+      message: userMessage || undefined
+    } satisfies ActivityEvent)
   }
 
   disconnect(): void {

@@ -1,5 +1,5 @@
 import { EventEmitter } from 'events'
-import type { ChatMessage, ChatStatus, Platform } from '@shared/types'
+import type { ActivityEvent, ChatMessage, ChatStatus, Platform } from '@shared/types'
 import { supportsChat } from '@shared/types'
 import { KickChat } from './kick'
 import { TwitchChat } from './twitch'
@@ -15,6 +15,7 @@ export class ChatManager extends EventEmitter {
   private connectors = new Map<string, Connector>()
   private status = new Map<string, ChatStatus>()
   private buffer: ChatMessage[] = []
+  private activity: ActivityEvent[] = []
   private bufferSize: number
 
   constructor(bufferSize = 500) {
@@ -36,6 +37,14 @@ export class ChatManager extends EventEmitter {
 
   clearHistory(): void {
     this.buffer = []
+  }
+
+  getActivity(): ActivityEvent[] {
+    return this.activity
+  }
+
+  clearActivity(): void {
+    this.activity = []
   }
 
   /** Twitch, YouTube and Kick all have a read path that needs no OAuth login. */
@@ -69,6 +78,20 @@ export class ChatManager extends EventEmitter {
         this.buffer.splice(0, this.buffer.length - this.bufferSize)
       }
       this.emit('message', message)
+    })
+
+    connector.on('activity', (event: ActivityEvent) => {
+      this.activity.push(event)
+      if (this.activity.length > this.bufferSize) {
+        this.activity.splice(0, this.activity.length - this.bufferSize)
+      }
+      this.emit('activity', event)
+    })
+
+    // Kick's non-chat events are undocumented; surface anything unmapped so the
+    // mapping can be corrected from evidence instead of guesswork.
+    connector.on('unknown-event', (name: string) => {
+      this.emit('unknown-event', platform.name, name)
     })
 
     connector.on('status', (state: ChatStatus['state'], detail?: string) => {
@@ -110,5 +133,6 @@ export class ChatManager extends EventEmitter {
   dispose(): void {
     for (const id of [...this.connectors.keys()]) this.disconnect(id)
     this.buffer = []
+    this.activity = []
   }
 }

@@ -1,5 +1,6 @@
 import { contextBridge, ipcRenderer } from 'electron'
 import type {
+  ActivityEvent,
   AppConfig,
   ChatMessage,
   CheckResult,
@@ -28,6 +29,8 @@ const api = {
   getSnapshot: (): Promise<Snapshot> => ipcRenderer.invoke('snapshot:get'),
   getLogs: (): Promise<LogEntry[]> => ipcRenderer.invoke('logs:get'),
   getChatHistory: (): Promise<ChatMessage[]> => ipcRenderer.invoke('chat:history'),
+  getActivity: (): Promise<ActivityEvent[]> => ipcRenderer.invoke('activity:history'),
+  clearActivity: (): Promise<boolean> => ipcRenderer.invoke('activity:clear'),
   clearChat: (): Promise<boolean> => ipcRenderer.invoke('chat:clear'),
   reconnectChat: (id: string): Promise<boolean> => ipcRenderer.invoke('chat:reconnect', id),
 
@@ -53,6 +56,11 @@ const api = {
     const handler = (_e: unknown, m: ChatMessage): void => cb(m)
     ipcRenderer.on('chat-message', handler)
     return () => ipcRenderer.removeListener('chat-message', handler)
+  },
+  onActivity: (cb: (e: ActivityEvent) => void): (() => void) => {
+    const handler = (_e: unknown, event: ActivityEvent): void => cb(event)
+    ipcRenderer.on('activity-event', handler)
+    return () => ipcRenderer.removeListener('activity-event', handler)
   },
   onLog: (cb: (l: LogEntry) => void): (() => void) => {
     const handler = (_e: unknown, l: LogEntry): void => cb(l)

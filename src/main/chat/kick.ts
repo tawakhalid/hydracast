@@ -1,7 +1,7 @@
 import { EventEmitter } from 'events'
 import { net } from 'electron'
 import WebSocket from 'ws'
-import type { ChatMessage, Platform } from '@shared/types'
+import type { ActivityEvent, ActivityKind, ChatMessage, Platform } from '@shared/types'
 
 /**
  * Kick chat rides on a public Pusher app - the same credentials the kick.com web
@@ -27,6 +27,32 @@ const CHANNEL_API = 'https://kick.com/api/v2/channels'
  * event name did not match.
  */
 const CHAT_EVENTS = new Set(['App\\Events\\ChatMessageEvent', 'App\\Events\\ChatMessage'])
+
+/**
+ * Kick activity events, mapped by the tail of the event name.
+ *
+ * UNVERIFIED against the wire, unlike the chat event above, which was captured
+ * live. Kick documents none of this, so these names are a best guess and some
+ * may be wrong or missing. That is survivable only because `handle()` reports
+ * every unrecognised event it receives: switch on chat debugging, cause a
+ * follow or a sub, and the Activity log names exactly what Kick sent, so the
+ * table below can be corrected from evidence rather than guessed at again.
+ */
+const ACTIVITY_KINDS: Record<string, ActivityKind> = {
+  FollowersUpdated: 'follow',
+  SubscriptionEvent: 'subscription',
+  ChannelSubscriptionEvent: 'subscription',
+  GiftedSubscriptionsEvent: 'gift',
+  LuckyUsersWhoGotGiftSubscriptionsEvent: 'gift',
+  StreamHostEvent: 'raid',
+  StreamHostedEvent: 'raid'
+}
+
+/** Strips the `App\Events\` prefix Kick puts on every event name. */
+function eventTail(name: string): string {
+  const idx = name.lastIndexOf('\\')
+  return idx >= 0 ? name.slice(idx + 1) : name
+}
 
 /**
  * Issues the lookup through Chromium's network stack rather than Node's.
@@ -235,9 +261,75 @@ export class KickChat extends EventEmitter {
       }
 
       default:
-        if (frame.event && CHAT_EVENTS.has(frame.event)) this.emitMessage(frame.data)
+        if (!frame.event) return
+        if (CHAT_EVENTS.has(frame.event)) {
+          this.emitMessage(frame.data)
+          return
+        }
+        if (!this.emitActivity(frame.event, frame.data)) {
+          // Nothing silently dropped: an unmapped event is reported so the
+          // table above can be corrected from what Kick actually sends.
+          this.emit('unknown-event', frame.event)
+        }
         return
     }
+  }
+
+  /**
+   * Maps a non-chat Kick event onto an activity event. Returns false when the
+   * event is not one we know, so the caller can report it.
+   */
+  private emitActivity(event: string, payload: unknown): boolean {
+    const kind = ACTIVITY_KINDS[eventTail(event)]
+    if (!kind) return false
+
+    let body: Record<string, unknown> = {}
+    try {
+      body = (typeof payload === 'string' ? JSON.parse(payload) : payload) ?? {}
+    } catch {
+      /* keep the empty body; the event itself is still worth showing */
+    }
+
+    const asRecord = (v: unknown): Record<string, unknown> =>
+      v && typeof v === 'object' ? (v as Record<string, unknown>) : {}
+
+    // Kick is inconsistent about where the username sits, so try the shapes
+    // seen in the wild before falling back to something printable.
+    const actor =
+      (body['username'] as string) ||
+      (asRecord(body['user'])['username'] as string) ||
+      (asRecord(body['sender'])['username'] as string) ||
+      (body['followersCount'] !== undefined ? 'Someone' : 'Someone')
+
+    const count =
+      (body['followersCount'] as number) ??
+      (body['months'] as number) ??
+      (body['number_viewers'] as number) ??
+      (Array.isArray(body['gifted_usernames'])
+        ? (body['gifted_usernames'] as unknown[]).length
+        : undefined)
+
+    const detail =
+      kind === 'follow'
+        ? 'followed'
+        : kind === 'raid'
+          ? `hosted the stream${count ? ` with ${count} viewers` : ''}`
+          : kind === 'gift'
+            ? `gifted ${count ?? ''} subscription${count === 1 ? '' : 's'}`.replace('  ', ' ')
+            : `subscribed${count ? ` for ${count} months` : ''}`
+
+    this.emit('activity', {
+      id: `${Date.now()}-${Math.random().toString(36).slice(2)}`,
+      platformId: this.platform.id,
+      platformKind: 'kick',
+      timestamp: Date.now(),
+      kind,
+      actor,
+      detail,
+      amount: typeof count === 'number' ? count : undefined,
+      amountLabel: typeof count === 'number' ? String(count) : undefined
+    } satisfies ActivityEvent)
+    return true
   }
 
   private emitMessage(payload: unknown): void {
