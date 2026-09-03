@@ -1,0 +1,36 @@
+<!doctype html><html><head><meta charset="utf-8">
+<link rel="stylesheet" href="../src/renderer/src/styles.css">
+<style>html,body{height:100%;margin:0}</style></head><body>
+<div class="app">
+  <div class="aurora"><span></span></div>
+  <div class="titlebar"><div style="flex:1"></div>
+    <div class="titlebar-tools">
+      <div class="layout-menu">
+        <button class="btn sm ghost">Default</button>
+        <div class="layout-pop" id="pop">LAYOUTS</div>
+      </div>
+    </div>
+  </div>
+  <div class="body" id="body">
+    <div class="main"><div class="panel" id="panel" style="height:300px">panel</div></div>
+  </div>
+  
+  <div class="toasts" id="ts"></div>
+</div>
+
+<script>
+window.__probe = function () {
+  const cs = (id) => getComputedStyle(document.getElementById(id))
+  const tb = getComputedStyle(document.querySelector('.titlebar'))
+  const pop = document.getElementById('pop').getBoundingClientRect()
+  // What actually paints at a point inside the popover, below the title bar?
+  const hit = document.elementFromPoint(pop.left + pop.width / 2, pop.top + pop.height / 2)
+  return {
+    titlebarZ: tb.zIndex, titlebarPos: tb.position,
+    bodyZ: cs('body').zIndex,
+    toastsPos: cs('ts').position,
+    popTop: Math.round(pop.top), popBottom: Math.round(pop.bottom),
+    topmostAtPopover: hit ? (hit.id || hit.className || hit.tagName) : 'none'
+  }
+}
+</script></body></html>

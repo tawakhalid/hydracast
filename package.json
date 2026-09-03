@@ -18,6 +18,7 @@
     "dist:portable": "electron-vite build && electron-builder --win portable --publish never",
     "test": "npm run test:layout && npm run test:kick && npm run test:activity && npm run test:pipeline",
     "test:activity": "esbuild test/activity.test.ts --bundle --platform=node --format=cjs --outfile=test/.activity.cjs --alias:electron=./test/electron-stub.js --alias:@shared=./src/shared && node test/.activity.cjs",
+    "test:stacking": "electron test/stacking.test.js",
     "test:layout": "esbuild test/layout.test.ts --bundle --platform=node --format=cjs --outfile=test/.layout.cjs --alias:@shared=./src/shared && node test/.layout.cjs",
     "test:kick": "esbuild test/kick.test.ts --bundle --platform=node --format=cjs --outfile=test/.kick.cjs --alias:electron=./test/electron-stub.js --alias:@shared=./src/shared && node test/.kick.cjs",
     "test:pipeline": "esbuild test/pipeline.test.ts --bundle --platform=node --format=cjs --outfile=test/.pipeline.cjs --external:electron --external:node-media-server --alias:@shared=./src/shared && node test/.pipeline.cjs"
