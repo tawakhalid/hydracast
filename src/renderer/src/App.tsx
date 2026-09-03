@@ -151,6 +151,15 @@ export default function App() {
     toast(`${label} copied`)
   }
 
+  /** Flattens the activity log into something pasteable into a bug report. */
+  const logsAsText = (entries: LogEntry[]): string =>
+    entries
+      .map(
+        (l) =>
+          `${new Date(l.timestamp).toLocaleTimeString('en-GB')}  ${l.level.padEnd(7)} ${l.scope.padEnd(6)} ${l.message}`
+      )
+      .join('\n')
+
   const platforms = config?.platforms ?? []
   const liveCount = useMemo(
     () => Object.values(snapshot.relays).filter((r) => r.status === 'live').length,
@@ -454,13 +463,39 @@ export default function App() {
                 <LogsIcon size={16} />
                 <span className="panel-title">Activity</span>
                 <div className="spacer" />
+                <button
+                  className="btn sm ghost"
+                  disabled={!logs.length}
+                  onClick={() => copy(logsAsText(logs), `${logs.length} log lines`)}
+                  title="Copy every line below to the clipboard"
+                >
+                  <CopyIcon size={13} />
+                  Copy all
+                </button>
+                <button
+                  className="btn sm ghost"
+                  disabled={!logs.some((l) => l.level === 'error' || l.level === 'warn')}
+                  onClick={() => {
+                    const problems = logs.filter((l) => l.level === 'error' || l.level === 'warn')
+                    copy(logsAsText(problems), `${problems.length} problem lines`)
+                  }}
+                  title="Copy only the warnings and errors"
+                >
+                  <CopyIcon size={13} />
+                  Copy errors
+                </button>
                 <button className="btn sm ghost" onClick={() => setLogs([])}>
                   Clear
                 </button>
               </div>
               <div className="log-list">
                 {logs.map((l) => (
-                  <div key={l.id} className={`log-row ${l.level}`}>
+                  <div
+                    key={l.id}
+                    className={`log-row ${l.level}`}
+                    onDoubleClick={() => copy(l.message, 'Log line')}
+                    title="Double-click to copy this line"
+                  >
                     <span className="log-time">
                       {new Date(l.timestamp).toLocaleTimeString('en-GB')}
                     </span>

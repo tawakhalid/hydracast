@@ -9,6 +9,34 @@ const ok = (label: string, detail: string): CheckResult => ({ label, level: 'ok'
 const warn = (label: string, detail: string): CheckResult => ({ label, level: 'warn', detail })
 const bad = (label: string, detail: string): CheckResult => ({ label, level: 'error', detail })
 
+/**
+ * The URL a relay should actually publish to.
+ *
+ * Kick's dashboard does not always show the whole ingest URL, and Amazon IVS
+ * only accepts the `app` application, so a pasted bare host silently fails the
+ * RTMP handshake. Rather than making the user retype something different from
+ * what their dashboard gave them, the missing pieces are filled in here - at
+ * the point of use, so the value they entered is never rewritten on disk.
+ *
+ * A URL that already carries a path is left exactly as typed: that is a
+ * deliberate choice by the user, and guessing over it is how a working setup
+ * gets broken.
+ */
+export function normalizeIngestUrl(platform: Platform): string {
+  const url = platform.url.trim()
+  const preset = PLATFORM_PRESETS.find((p) => p.kind === platform.kind)
+  if (!preset?.urlHostSuffix || !preset.urlPath) return url
+
+  const endpoint = parseEndpoint(url)
+  if (!endpoint || !endpoint.host.endsWith(preset.urlHostSuffix)) return url
+
+  const path = url.replace(/^[a-z]+:\/\/[^/]+/i, '').replace(/\/+$/, '')
+  if (path) return url
+
+  const scheme = endpoint.secure ? 'rtmps' : 'rtmp'
+  return `${scheme}://${endpoint.host}:${endpoint.port}${preset.urlPath}`
+}
+
 /** True when any check came back as a hard error. */
 export function hasErrors(checks: CheckResult[]): boolean {
   return checks.some((c) => c.level === 'error')
@@ -69,15 +97,16 @@ export function validateDestination(platform: Platform): CheckResult[] {
     )
   }
 
-  if (preset?.urlHostSuffix && endpoint.host.endsWith(preset.urlHostSuffix)) {
-    // IVS serves ingest from the "app" application; a bare host connects to no
-    // application at all and is rejected during the RTMP handshake.
+  if (preset?.urlHostSuffix && preset.urlPath && endpoint.host.endsWith(preset.urlHostSuffix)) {
     const path = url.replace(/^[a-z]+:\/\/[^/]+/i, '').replace(/\/+$/, '')
-    if (path !== '/app') {
+    if (!path) {
+      // Completed rather than rejected - the dashboard often shows only the host.
+      checks.push(ok('Ingest URL', `Publishing to ${normalizeIngestUrl(platform)}`))
+    } else if (path !== preset.urlPath) {
       checks.push(
-        bad(
+        warn(
           'Ingest URL',
-          `The URL must end in /app - copy the whole Stream URL, e.g. ${preset.urlPlaceholder ?? 'rtmps://<id>.global-contribute.live-video.net:443/app'}`
+          `${preset.name} normally ingests on the ${preset.urlPath} path; "${path}" may be refused. Left as you entered it.`
         )
       )
     }

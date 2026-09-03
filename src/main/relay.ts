@@ -3,7 +3,13 @@ import { EventEmitter } from 'events'
 import fs from 'fs'
 import type { AppSettings, Platform, RelayStats, RelayStatus } from '@shared/types'
 import { measureLatency, parseEndpoint } from './latency'
-import { hasErrors, probeDestination, summarise, validateDestination } from './diagnose'
+import {
+  hasErrors,
+  normalizeIngestUrl,
+  probeDestination,
+  summarise,
+  validateDestination
+} from './diagnose'
 
 const HISTORY = 40
 /** Lines of ffmpeg stderr kept for the failure report. */
@@ -144,7 +150,7 @@ export function buildArgs(platform: Platform, sourceUrl: string, sourceFps: numb
     '-progress',
     'pipe:1',
     '-nostats',
-    joinUrl(platform.url, platform.streamKey)
+    joinUrl(normalizeIngestUrl(platform), platform.streamKey)
   )
   return args
 }
@@ -307,6 +313,13 @@ export class RelayManager extends EventEmitter {
     if (hasErrors(checks)) {
       this.setStatus(relay, 'error', summarise(checks))
       return
+    }
+
+    // Say so when the pasted URL was completed, so the effective target is
+    // never a surprise.
+    const target = normalizeIngestUrl(platform)
+    if (target !== platform.url.trim()) {
+      this.emit('log', 'info', `${platform.name}: publishing to ${target}`)
     }
 
     relay.stopping = false

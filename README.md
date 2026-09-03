@@ -128,8 +128,10 @@ with a widening back-off and then stops, so the cause stays on screen instead of
 under an endless "reconnecting".
 
 **Kick specifically.** Kick runs on Amazon IVS, which issues every channel its own ingest host,
-so there is no shared URL that works for anyone else — copy the full Stream URL from your Kick
-dashboard. IVS is also stricter than Twitch: it terminates any session whose keyframe interval
+so there is no shared URL that works for anyone else — paste the Stream URL from your Kick
+dashboard exactly as shown. If it gives only the host, the `:443/app` part is filled in when the
+relay starts; the value you typed is never rewritten, and the log states the address actually
+published to. IVS is also stricter than Twitch: it terminates any session whose keyframe interval
 exceeds 2 seconds or whose bitrate is over the channel ceiling, and it holds a session open for
 up to a minute after a disconnect, rejecting reconnects with the same key in the meantime. In
 passthrough mode the keyframe interval is whatever Streamlabs sends, so set Streamlabs to 2 s

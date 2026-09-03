@@ -224,6 +224,12 @@ export interface PresetTarget {
   urlPlaceholder?: string
   /** Host suffix every valid ingest URL must end with. Checked before starting. */
   urlHostSuffix?: string
+  /**
+   * Application path the platform publishes under. When the pasted URL carries
+   * no path this is filled in automatically, so a dashboard that shows only the
+   * host still produces a working destination.
+   */
+  urlPath?: string
   /** Explains where to find the ingest URL when it is per-channel. */
   urlHint?: string
 }
@@ -252,10 +258,11 @@ export const PLATFORM_PRESETS: PresetTarget[] = [
     recommendedBitrate: 8000,
     helpUrl: 'https://kick.com/dashboard/settings/stream',
     perChannelIngest: true,
-    urlPlaceholder: 'rtmps://xxxxxxxxxxxx.global-contribute.live-video.net:443/app',
+    urlPlaceholder: 'rtmps://xxxxxxxxxxxx.global-contribute.live-video.net',
     urlHostSuffix: '.global-contribute.live-video.net',
+    urlPath: '/app',
     urlHint:
-      'Kick gives every channel its own ingest host. Copy the full Stream URL from your Kick dashboard - a URL from any other channel will reject your key.'
+      'Kick gives every channel its own ingest host. Paste the Stream URL from your Kick dashboard exactly as it shows it - the :443/app part is filled in for you if it is missing.'
   },
   {
     kind: 'facebook',

@@ -12,6 +12,7 @@ import { PLATFORM_PRESETS, supportsChat } from '@shared/types'
 import {
   AlertIcon,
   CheckIcon,
+  CopyIcon,
   ChevronIcon,
   CloseIcon,
   EyeIcon,
@@ -315,6 +316,21 @@ export default function SettingsModal({
 
                           {reports[p.id] && (
                             <div className="check-report">
+                              <button
+                                className="btn sm ghost"
+                                style={{ alignSelf: 'flex-start', marginBottom: 2 }}
+                                onClick={() =>
+                                  void navigator.clipboard.writeText(
+                                    reports[p.id]
+                                      .map((c) => `[${c.level}] ${c.label}: ${c.detail}`)
+                                      .join('\n')
+                                  )
+                                }
+                                title="Copy this report to the clipboard"
+                              >
+                                <CopyIcon size={12} />
+                                Copy report
+                              </button>
                               {reports[p.id].map((c, i) => (
                                 <div key={i} className={`check-row ${c.level}`}>
                                   {c.level === 'ok' ? <CheckIcon size={12} /> : <AlertIcon size={12} />}
