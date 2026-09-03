@@ -1,4 +1,5 @@
 import { EventEmitter } from 'events'
+import { net } from 'electron'
 import WebSocket from 'ws'
 import type { ChatMessage, Platform } from '@shared/types'
 
@@ -18,6 +19,19 @@ const PUSHER_URL = `wss://ws-us2.pusher.com/app/${PUSHER_KEY}?protocol=7&client=
 const CHANNEL_API = 'https://kick.com/api/v2/channels'
 
 const CHAT_EVENT = 'App\\Events\\ChatMessage'
+
+/**
+ * Issues the lookup through Chromium's network stack rather than Node's.
+ *
+ * Kick fronts its API with Cloudflare, which rejects Node's HTTP client outright
+ * (`403 Request blocked by security policy`) because its TLS and header
+ * signature is not a browser's. Electron already embeds a real browser, so
+ * asking it to make the request is both simpler and more honest than dressing
+ * Node up as one. Falls back to global fetch outside the Electron main process.
+ */
+function browserFetch(url: string, init: RequestInit): Promise<Response> {
+  return typeof net?.fetch === 'function' ? net.fetch(url, init) : fetch(url, init)
+}
 
 /** Kick inlines emotes as `[emote:12345:name]`; render the name instead. */
 function stripEmotes(text: string): string {
@@ -89,13 +103,10 @@ export class KickChat extends EventEmitter {
    */
   private async resolveChatroomId(slug: string): Promise<string | null> {
     try {
-      const res = await fetch(`${CHANNEL_API}/${encodeURIComponent(slug)}`, {
-        headers: {
-          accept: 'application/json',
-          'accept-language': 'en-US,en;q=0.9',
-          'user-agent':
-            'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36'
-        }
+      const res = await browserFetch(`${CHANNEL_API}/${encodeURIComponent(slug)}`, {
+        // No user-agent override: Chromium sends its own, which matches the TLS
+        // fingerprint it presents. A hand-written UA only contradicts it.
+        headers: { accept: 'application/json', 'accept-language': 'en-US,en;q=0.9' }
       })
 
       if (res.status === 404) {
@@ -106,7 +117,9 @@ export class KickChat extends EventEmitter {
         this.emit(
           'status',
           'error',
-          `Kick blocked the channel lookup (HTTP ${res.status}) - enter the chatroom id manually`
+          res.status === 403
+            ? 'Kick blocked the channel lookup (403). Set the chatroom id in Settings > Chat sources to connect anyway.'
+            : `Kick channel lookup failed (HTTP ${res.status})`
         )
         return null
       }

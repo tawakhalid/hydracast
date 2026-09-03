@@ -182,7 +182,16 @@ select {
   }
 }
 
-.app > *:not(.aurora) {
+/*
+ * Lifts in-flow content above the aurora backdrop.
+ *
+ * Overlays and toasts are excluded deliberately: they declare `position: fixed`
+ * and carry their own z-index, but this selector is more specific (0-2-0 against
+ * 0-1-0), so it used to override them into `position: relative`. That made the
+ * settings modal a flex item of `.app` and squeezed `.body` - the preview,
+ * cards and chat - down to nothing.
+ */
+.app > *:not(.aurora):not(.overlay):not(.toasts) {
   position: relative;
   z-index: 1;
 }
