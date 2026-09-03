@@ -12,3 +12,6 @@ test/.activity.cjs
 .env.*
 !.env.example
 .DS_Store
+
+# Screenshots dropped in the repo root while debugging
+/*.png

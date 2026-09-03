@@ -508,6 +508,41 @@ export function movePanel(values: LayoutValues, id: PanelId, delta: -1 | 1): Lay
   return { ...layoutValuesOf(values), panels }
 }
 
+/**
+ * Drops a panel into `region` at `index`, where `index` counts visible panels -
+ * that is what a drag indicator points at. Hidden panels keep their relative
+ * position rather than being shuffled by a move they had no part in.
+ */
+export function placePanel(
+  values: LayoutValues,
+  id: PanelId,
+  region: PanelRegion,
+  index: number
+): LayoutValues {
+  const panel = values.panels.find((p) => p.id === id)
+  if (!panel) return values
+
+  const full = values.panels
+    .filter((p) => p.region === region && p.id !== id)
+    .sort((a, b) => a.order - b.order)
+  const visible = full.filter((p) => p.visible)
+
+  // Translate an index over visible panels into one over all of them.
+  let insertAt = full.length
+  if (index < visible.length) {
+    const anchor = visible[Math.max(0, index)]
+    const found = full.findIndex((p) => p.id === anchor.id)
+    if (found >= 0) insertAt = found
+  }
+  full.splice(insertAt, 0, { ...panel, region })
+
+  const orders = new Map(full.map((p, i) => [p.id, i]))
+  const panels = values.panels.map((p) =>
+    orders.has(p.id) ? { ...p, region: p.id === id ? region : p.region, order: orders.get(p.id)! } : { ...p }
+  )
+  return { ...layoutValuesOf(values), panels: renumber(panels) }
+}
+
 /** Sends a panel to the other region, placing it last. */
 export function switchRegion(values: LayoutValues, id: PanelId): LayoutValues {
   const panel = values.panels.find((p) => p.id === id)

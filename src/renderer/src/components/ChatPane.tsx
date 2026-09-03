@@ -81,23 +81,6 @@ export default function ChatPane({
 
   return (
     <div className="chat" style={{ ['--chat-fs' as string]: `${shownSize}px` }}>
-      <div className="chat-toolbar">
-        <span className="pill" style={{ height: 22, fontSize: 11 }}>
-          {visible.length}
-        </span>
-        <div className="spacer" />
-        <button
-          className={`btn icon sm ghost ${sizeOpen ? 'active' : ''}`}
-          onClick={() => setSizeOpen((v) => !v)}
-          title="Adjust chat text size"
-        >
-          <span style={{ fontWeight: 800, fontSize: 13, letterSpacing: '-0.03em' }}>Aa</span>
-        </button>
-        <button className="btn icon sm ghost" onClick={onClear} title="Clear chat history">
-          <TrashIcon size={14} />
-        </button>
-      </div>
-
       <AnimatePresence initial={false}>
         {sizeOpen && (
           <motion.div
@@ -146,6 +129,9 @@ export default function ChatPane({
       </AnimatePresence>
 
       <div className="chat-filters">
+        <span className="pill" style={{ height: 22, fontSize: 11 }}>
+          {visible.length}
+        </span>
         {chatPlatforms.length === 0 && (
           <span style={{ fontSize: 11.5, color: 'var(--text-faint)', padding: '4px 2px' }}>
             Add a Twitch, YouTube or Kick destination to read chat.
@@ -177,6 +163,18 @@ export default function ChatPane({
             </button>
           )
         })}
+
+        <div className="spacer" />
+        <button
+          className={`btn icon sm ghost ${sizeOpen ? 'active' : ''}`}
+          onClick={() => setSizeOpen((v) => !v)}
+          title="Adjust chat text size"
+        >
+          <span style={{ fontWeight: 800, fontSize: 13, letterSpacing: '-0.03em' }}>Aa</span>
+        </button>
+        <button className="btn icon sm ghost" onClick={onClear} title="Clear chat history">
+          <TrashIcon size={14} />
+        </button>
       </div>
 
       <div className="chat-list" ref={listRef} onScroll={onScroll}>

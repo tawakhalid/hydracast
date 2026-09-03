@@ -71,17 +71,10 @@ export default function ActivityPane({ events, platforms, fontSize, onClear }: P
 
   return (
     <div className="chat" style={{ ['--chat-fs' as string]: `${fontSize}px` }}>
-      <div className="chat-toolbar">
+      <div className="chat-filters">
         <span className="pill" style={{ height: 22, fontSize: 11 }}>
           {visible.length}
         </span>
-        <div className="spacer" />
-        <button className="btn icon sm ghost" onClick={onClear} title="Clear the activity feed">
-          <TrashIcon size={14} />
-        </button>
-      </div>
-
-      <div className="chat-filters">
         {FILTERS.map((f) => (
           <button
             key={f.id}
@@ -92,6 +85,11 @@ export default function ActivityPane({ events, platforms, fontSize, onClear }: P
             {f.label}
           </button>
         ))}
+
+        <div className="spacer" />
+        <button className="btn icon sm ghost" onClick={onClear} title="Clear the activity feed">
+          <TrashIcon size={14} />
+        </button>
       </div>
 
       <div className="chat-list" ref={listRef} onScroll={onScroll}>

@@ -16,6 +16,7 @@ import {
   layoutLabel,
   layoutValuesOf,
   movePanel,
+  placePanel,
   panelsIn,
   switchRegion,
   uniqueLayoutName,
@@ -90,6 +91,57 @@ const hidden = withPanel(base(), 'preview', { visible: false })
 check('a hidden panel drops out of its region', !panelsIn(hidden, 'left').some((p) => p.id === 'preview'))
 check('hiding does not delete the panel', hidden.panels.some((p) => p.id === 'preview'))
 check('editing returns a copy, not the original', hidden.panels !== base().panels)
+
+// ---- drag and drop placement ----------------------------------------------
+const dropped = placePanel(base(), 'chat', 'left', 0)
+check(
+  'a panel dropped at index 0 lands first in the target region',
+  panelsIn(dropped, 'left').map((p) => p.id).join(',') === 'chat,preview,destinations',
+  panelsIn(dropped, 'left').map((p) => p.id).join(',')
+)
+check('it leaves its old region', !panelsIn(dropped, 'right').some((p) => p.id === 'chat'))
+check('the old region renumbers from zero', panelsIn(dropped, 'right').every((p, i) => p.order === i))
+
+const middle = placePanel(base(), 'chat', 'left', 1)
+check(
+  'dropping between two panels inserts there',
+  panelsIn(middle, 'left').map((p) => p.id).join(',') === 'preview,chat,destinations',
+  panelsIn(middle, 'left').map((p) => p.id).join(',')
+)
+
+const past = placePanel(base(), 'chat', 'left', 99)
+check(
+  'an index past the end appends',
+  panelsIn(past, 'left').at(-1)?.id === 'chat',
+  panelsIn(past, 'left').map((p) => p.id).join(',')
+)
+
+const within = placePanel(base(), 'destinations', 'left', 0)
+check(
+  'reordering within a region works without a region change',
+  panelsIn(within, 'left').map((p) => p.id).join(',') === 'destinations,preview'
+)
+
+// A hidden panel must keep its place rather than being shuffled by a drop it
+// took no part in.
+const withHidden = withPanel(base(), 'preview', { visible: false })
+const overHidden = placePanel(withHidden, 'chat', 'left', 0)
+check(
+  'a hidden panel is not displaced by a drop',
+  overHidden.panels.find((p) => p.id === 'preview')?.visible === false
+)
+check(
+  'the drop still lands where the indicator pointed',
+  panelsIn(overHidden, 'left').map((p) => p.id).join(',') === 'chat,destinations',
+  panelsIn(overHidden, 'left').map((p) => p.id).join(',')
+)
+
+check(
+  'dropping an unknown panel is a no-op',
+  placePanel(base(), 'nope' as never, 'left', 0) === base() ||
+    JSON.stringify(placePanel(base(), 'nope' as never, 'left', 0).panels) ===
+      JSON.stringify(base().panels)
+)
 
 // ---- draft and dirty state -------------------------------------------------
 const clean: AppSettings = { ...DEFAULT_SETTINGS, draftLayout: null }

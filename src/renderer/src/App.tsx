@@ -8,6 +8,7 @@ import type {
   LayoutValues,
   LogEntry,
   PanelId,
+  PanelRegion,
   PanelState,
   PlatformKind,
   Snapshot
@@ -18,10 +19,9 @@ import {
   isLayoutDirty,
   layoutLabel,
   layoutValuesOf,
-  movePanel,
+  placePanel,
   panelsIn,
   PANEL_TITLES,
-  switchRegion,
   uniqueLayoutName,
   withPanel
 } from '@shared/types'
@@ -89,6 +89,11 @@ export default function App() {
   const [logs, setLogs] = useState<LogEntry[]>([])
   const [activity, setActivity] = useState<ActivityEvent[]>([])
   const [editing, setEditing] = useState(false)
+  const [drag, setDrag] = useState<{ id: PanelId; region: PanelRegion; index: number } | null>(
+    null
+  )
+  const regionRefs = useRef<Record<PanelRegion, HTMLDivElement | null>>({ left: null, right: null })
+  const panelRefs = useRef(new Map<PanelId, HTMLDivElement>())
   const workspaceRef = useRef<HTMLDivElement>(null)
   const [dragWidth, setDragWidth] = useState<number | null>(null)
   const [resizing, setResizing] = useState(false)
@@ -277,6 +282,49 @@ export default function App() {
   }
 
   /**
+   * Drags a panel to a new column and position.
+   *
+   * The drop target is worked out from the rendered geometry rather than from
+   * HTML5 drag events: the column under the pointer decides the region, and the
+   * first panel whose vertical midpoint the pointer is above decides the index.
+   * That keeps the indicator honest even as panels resize mid-drag.
+   */
+  const startPanelDrag = (id: PanelId, e: React.PointerEvent): void => {
+    e.preventDefault()
+
+    const targetAt = (x: number, y: number): { region: PanelRegion; index: number } => {
+      const right = regionRefs.current.right?.getBoundingClientRect()
+      const region: PanelRegion = right && x >= right.left ? 'right' : 'left'
+
+      const siblings = panelsIn(layout, region).filter((p) => p.id !== id)
+      let index = siblings.length
+      for (let i = 0; i < siblings.length; i++) {
+        const el = panelRefs.current.get(siblings[i].id)
+        if (!el) continue
+        const r = el.getBoundingClientRect()
+        if (y < r.top + r.height / 2) {
+          index = i
+          break
+        }
+      }
+      return { region, index }
+    }
+
+    setDrag({ id, ...targetAt(e.clientX, e.clientY) })
+
+    const onMove = (ev: PointerEvent): void => setDrag({ id, ...targetAt(ev.clientX, ev.clientY) })
+    const onUp = (ev: PointerEvent): void => {
+      window.removeEventListener('pointermove', onMove)
+      window.removeEventListener('pointerup', onUp)
+      const target = targetAt(ev.clientX, ev.clientY)
+      setDrag(null)
+      editLayout(placePanel(layout, id, target.region, target.index))
+    }
+    window.addEventListener('pointermove', onMove)
+    window.addEventListener('pointerup', onUp)
+  }
+
+  /**
    * Drags the right-hand region wider or narrower. The width is tracked locally
    * for the duration of the drag and committed once on release, so a resize
    * costs one write rather than one per pointer move.
@@ -350,11 +398,22 @@ export default function App() {
   const leftPanels = config ? panelsIn(layout, 'left') : []
   const rightPanels = config ? panelsIn(layout, 'right') : []
 
+  /** Renders a region's panels with the drop indicator at the pending index. */
+  const withDropLine = (panels: PanelState[], region: PanelRegion): JSX.Element[] => {
+    const out: JSX.Element[] = []
+    const showAt = drag && drag.region === region ? drag.index : -1
+    const rest = panels.filter((p) => p.id !== drag?.id)
+
+    rest.forEach((panel, i) => {
+      if (i === showAt) out.push(<div key={`drop-${i}`} className="drop-line" />)
+      out.push(renderPanel(panel))
+    })
+    if (showAt >= rest.length) out.push(<div key="drop-end" className="drop-line" />)
+    return out
+  }
+
   /** Renders one panel inside the shared shell. */
   const renderPanel = (panel: PanelState): JSX.Element => {
-    const siblings = panelsIn(layout, panel.region)
-    const at = siblings.findIndex((p) => p.id === panel.id)
-
     let body: JSX.Element | null = null
     let actions: JSX.Element | null = null
 
@@ -438,11 +497,13 @@ export default function App() {
         panel={panel}
         title={PANEL_TITLES[panel.id]}
         editing={editing}
-        canMoveUp={at > 0}
-        canMoveDown={at >= 0 && at < siblings.length - 1}
+        dragging={drag?.id === panel.id}
+        frameRef={(el) => {
+          if (el) panelRefs.current.set(panel.id, el)
+          else panelRefs.current.delete(panel.id)
+        }}
         onToggleCollapse={() => patchPanel(panel.id, { collapsed: !panel.collapsed })}
-        onMove={(delta) => editLayout(movePanel(layout, panel.id, delta))}
-        onSwitchRegion={() => editLayout(switchRegion(layout, panel.id))}
+        onDragStart={(e) => startPanelDrag(panel.id, e)}
         onHide={() => patchPanel(panel.id, { visible: false })}
         actions={actions}
       >
@@ -652,17 +713,28 @@ export default function App() {
           {/* views */}
           {view === 'broadcast' && (
             <div className="workspace" ref={workspaceRef}>
-              <div className="workspace-left">{leftPanels.map(renderPanel)}</div>
+              <div
+                className="workspace-left"
+                ref={(el) => (regionRefs.current.left = el)}
+              >
+                {withDropLine(leftPanels, 'left')}
+              </div>
 
-              {rightPanels.length > 0 && (
+              {/* The right column stays mounted mid-drag so it can be dropped
+                  into even when the last panel has just been dragged out. */}
+              {(rightPanels.length > 0 || drag) && (
                 <>
                   <div
                     className={`splitter ${resizing ? 'dragging' : ''}`}
                     onPointerDown={startResize}
                     title="Drag to resize"
                   />
-                  <div className="chat-column" style={{ width: chatWidth }}>
-                    {rightPanels.map(renderPanel)}
+                  <div
+                    className="chat-column"
+                    style={{ width: chatWidth }}
+                    ref={(el) => (regionRefs.current.right = el)}
+                  >
+                    {withDropLine(rightPanels, 'right')}
                   </div>
                 </>
               )}

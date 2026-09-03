@@ -1098,10 +1098,17 @@ input[type='range']::-webkit-slider-thumb:hover {
 
 .chat-filters {
   display: flex;
+  align-items: center;
   gap: 6px;
-  padding: 10px 12px;
+  padding: 8px 12px;
   border-bottom: 1px solid var(--stroke);
   flex-wrap: wrap;
+}
+
+/* The panel frame supplies the title bar, so the filter row carries the
+   count and the panel's own buttons rather than claiming a second row. */
+.chat-filters .spacer {
+  flex: 1;
 }
 
 .chip {
@@ -1920,14 +1927,6 @@ select.input option {
   width: 100%;
 }
 
-.chat-toolbar {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  padding: 6px 12px 0;
-  flex-shrink: 0;
-}
-
 /* Title-bar tools: layout picker and the edit toggle. */
 .titlebar-tools {
   display: flex;
@@ -1968,4 +1967,35 @@ select.input option {
 .layout-dirty-actions {
   display: flex;
   gap: 6px;
+}
+
+/* Panel drag and drop, edit mode only. */
+.panel-frame-head.draggable {
+  cursor: grab;
+  user-select: none;
+}
+
+.panel-frame-head.draggable:active {
+  cursor: grabbing;
+}
+
+.panel-grip {
+  display: grid;
+  place-items: center;
+  color: var(--text-faint);
+  flex-shrink: 0;
+  margin-right: 2px;
+}
+
+/* The panel being dragged fades so the drop indicator reads clearly. */
+.panel-frame.dragging {
+  opacity: 0.4;
+}
+
+.drop-line {
+  flex: 0 0 auto;
+  height: 3px;
+  border-radius: 3px;
+  background: linear-gradient(90deg, var(--accent), var(--accent-2));
+  box-shadow: 0 0 12px rgba(124, 92, 255, 0.65);
 }
