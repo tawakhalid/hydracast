@@ -10,7 +10,6 @@ import {
   PLATFORM_PRESETS,
   PlatformKind
 } from '@shared/types'
-import { STALE_KICK_HOST } from './diagnose'
 
 let configPath = ''
 let cache: AppConfig | null = null
@@ -40,9 +39,9 @@ function defaultConfig(): AppConfig {
  * Fills in fields added by newer versions so an old config file never
  * produces `undefined` deep in the relay argument builder.
  *
- * Also clears the placeholder Kick ingest host that 1.0.0 shipped as a default.
- * It is one specific account's Amazon IVS endpoint, so leaving it in place means
- * silently streaming at a host that will never accept the user's key.
+ * This only ever adds missing fields. Nothing here may rewrite or clear a value
+ * the user entered: a migration that edits saved credentials destroys a working
+ * setup on load, and the user has no way to tell that it happened.
  */
 function migrate(raw: Partial<AppConfig>): AppConfig {
   const base = defaultConfig()
@@ -50,7 +49,6 @@ function migrate(raw: Partial<AppConfig>): AppConfig {
   const platforms = (raw.platforms ?? base.platforms).map((p) => ({
     ...p,
     id: p.id || randomUUID(),
-    url: p.url?.includes(STALE_KICK_HOST) ? '' : p.url,
     video: { ...DEFAULT_VIDEO, ...(p.video ?? {}) },
     chat: { ...(p.chat ?? {}), enabled: p.chat?.enabled ?? true }
   }))

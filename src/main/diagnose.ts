@@ -5,14 +5,6 @@ import type { CheckResult, Platform } from '@shared/types'
 import { PLATFORM_PRESETS } from '@shared/types'
 import { parseEndpoint } from './latency'
 
-/**
- * The per-channel Amazon IVS host Hydracast 1.0.0 shipped as the Kick default.
- * It belongs to one specific Kick account, so every other user was pushing at a
- * stranger`s ingest edge and getting a silent handshake rejection. Configs
- * saved before the fix still carry it, so we call it out by name.
- */
-export const STALE_KICK_HOST = 'fa723fc1b171.global-contribute.live-video.net'
-
 const ok = (label: string, detail: string): CheckResult => ({ label, level: 'ok', detail })
 const warn = (label: string, detail: string): CheckResult => ({ label, level: 'warn', detail })
 const bad = (label: string, detail: string): CheckResult => ({ label, level: 'error', detail })
@@ -65,20 +57,30 @@ export function validateDestination(platform: Platform): CheckResult[] {
     checks.push(ok('Ingest URL', `${scheme}://${endpoint.host}:${endpoint.port}`))
   }
 
-  if (endpoint.host === STALE_KICK_HOST) {
-    checks.push(
-      bad(
-        'Ingest host',
-        `This is the placeholder host shipped in 1.0.0, not your channel. Copy the Stream URL from ${preset?.helpUrl ?? 'your dashboard'}.`
-      )
-    )
-  } else if (preset?.urlHostSuffix && !endpoint.host.endsWith(preset.urlHostSuffix)) {
+  // Only the shape of the host is checked, never its value. Which channel an
+  // ingest host belongs to is not knowable from here, and guessing wrong would
+  // reject a URL that is perfectly correct.
+  if (preset?.urlHostSuffix && !endpoint.host.endsWith(preset.urlHostSuffix)) {
     checks.push(
       bad(
         'Ingest host',
         `${preset.name} ingest hosts end with ${preset.urlHostSuffix}; got "${endpoint.host}".`
       )
     )
+  }
+
+  if (preset?.urlHostSuffix && endpoint.host.endsWith(preset.urlHostSuffix)) {
+    // IVS serves ingest from the "app" application; a bare host connects to no
+    // application at all and is rejected during the RTMP handshake.
+    const path = url.replace(/^[a-z]+:\/\/[^/]+/i, '').replace(/\/+$/, '')
+    if (path !== '/app') {
+      checks.push(
+        bad(
+          'Ingest URL',
+          `The URL must end in /app - copy the whole Stream URL, e.g. ${preset.urlPlaceholder ?? 'rtmps://<id>.global-contribute.live-video.net:443/app'}`
+        )
+      )
+    }
   }
 
   if (!key) {
