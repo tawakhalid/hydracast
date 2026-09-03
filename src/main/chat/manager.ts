@@ -1,9 +1,11 @@
 import { EventEmitter } from 'events'
 import type { ChatMessage, ChatStatus, Platform } from '@shared/types'
+import { supportsChat } from '@shared/types'
+import { KickChat } from './kick'
 import { TwitchChat } from './twitch'
 import { YouTubeChat } from './youtube'
 
-type Connector = TwitchChat | YouTubeChat
+type Connector = TwitchChat | YouTubeChat | KickChat
 
 /**
  * Owns one chat connector per platform and merges every message into a single
@@ -36,17 +38,30 @@ export class ChatManager extends EventEmitter {
     this.buffer = []
   }
 
-  /** Only Twitch and YouTube have a public read path we can use without OAuth. */
+  /** Twitch, YouTube and Kick all have a read path that needs no OAuth login. */
   private supports(platform: Platform): boolean {
-    return platform.kind === 'twitch' || platform.kind === 'youtube'
+    return supportsChat(platform.kind)
+  }
+
+  private createConnector(platform: Platform): Connector | null {
+    switch (platform.kind) {
+      case 'twitch':
+        return new TwitchChat(platform)
+      case 'youtube':
+        return new YouTubeChat(platform)
+      case 'kick':
+        return new KickChat(platform)
+      default:
+        return null
+    }
   }
 
   connect(platform: Platform): void {
     this.disconnect(platform.id)
     if (!platform.chat.enabled || !this.supports(platform)) return
 
-    const connector: Connector =
-      platform.kind === 'twitch' ? new TwitchChat(platform) : new YouTubeChat(platform)
+    const connector = this.createConnector(platform)
+    if (!connector) return
 
     connector.on('message', (message: ChatMessage) => {
       this.buffer.push(message)

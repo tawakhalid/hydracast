@@ -3,8 +3,19 @@ import { EventEmitter } from 'events'
 import fs from 'fs'
 import type { AppSettings, Platform, RelayStats, RelayStatus } from '@shared/types'
 import { measureLatency, parseEndpoint } from './latency'
+import { hasErrors, probeDestination, summarise, validateDestination } from './diagnose'
 
 const HISTORY = 40
+/** Lines of ffmpeg stderr kept for the failure report. */
+const STDERR_TAIL = 40
+/**
+ * How many times a relay may fail *before ever going live* before we stop
+ * retrying. A destination that never connects is a configuration problem, and
+ * looping on it forever is what hid the real error.
+ */
+const MAX_START_FAILURES = 3
+/** stderr lines worth surfacing in the activity log while a relay is healthy. */
+const SIGNIFICANT = /error|failed|unable|refused|invalid|denied|timed out|cannot/i
 
 /** Resolves ffmpeg: explicit setting, then the bundled binary, then PATH. */
 export function resolveFfmpeg(settings: AppSettings): string {
@@ -60,9 +71,10 @@ export function buildArgs(platform: Platform, sourceUrl: string, sourceFps: numb
   const v = platform.video
   const args: string[] = [
     '-hide_banner',
-    '-nostdin',
+    // No -nostdin: stop() quits ffmpeg by writing "q" to its stdin, which a
+    // dedicated pipe makes safe and which -nostdin would silently ignore.
     '-loglevel',
-    'error',
+    'warning',
     '-fflags',
     '+genpts',
     '-rtmp_live',
@@ -146,6 +158,10 @@ interface Relay {
   stderrTail: string[]
   /** Set while the user is intentionally stopping, to suppress auto-reconnect. */
   stopping: boolean
+  /** True once media actually reached the platform on this attempt. */
+  wentLive: boolean
+  /** Consecutive failures that never reached `live`. */
+  startFailures: number
 }
 
 function blankStats(platformId: string): RelayStats {
@@ -176,6 +192,8 @@ export class RelayManager extends EventEmitter {
   private settings: AppSettings
   private sourceUrl = ''
   private sourceFps = 0
+  /** Whether an encoder is currently publishing into the local ingest. */
+  private sourcePublishing = false
   private latencyTimer: NodeJS.Timeout | null = null
 
   constructor(settings: AppSettings) {
@@ -193,6 +211,15 @@ export class RelayManager extends EventEmitter {
     this.sourceFps = fps
   }
 
+  /**
+   * Relays can be armed before Streamlabs connects. While that is the case a
+   * failed start is a missing source, not a broken destination, so it must not
+   * spend the retry budget or trigger a destination report.
+   */
+  setSourcePublishing(publishing: boolean): void {
+    this.sourcePublishing = publishing
+  }
+
   /** Keeps a stats entry alive for every configured platform, live or not. */
   syncPlatforms(platforms: Platform[]): void {
     for (const p of platforms) {
@@ -207,7 +234,9 @@ export class RelayManager extends EventEmitter {
           startedAt: 0,
           reconnectTimer: null,
           stderrTail: [],
-          stopping: false
+          stopping: false,
+          wentLive: false,
+          startFailures: 0
         })
       }
     }
@@ -255,25 +284,34 @@ export class RelayManager extends EventEmitter {
     this.emit('status', relay.platform.id, status)
   }
 
+  /** A user-initiated start clears the retry budget left by an earlier failure. */
   async start(platformId: string): Promise<void> {
+    const relay = this.relays.get(platformId)
+    if (relay) relay.startFailures = 0
+    await this.launch(platformId)
+  }
+
+  private async launch(platformId: string): Promise<void> {
     const relay = this.relays.get(platformId)
     if (!relay) return
     if (relay.proc) return
     const platform = relay.platform
 
-    if (!platform.url.trim()) {
-      this.setStatus(relay, 'error', 'No RTMP URL configured')
-      this.emit('log', 'error', `${platform.name}: no RTMP URL configured`)
-      return
+    // Config problems are caught here rather than left to ffmpeg, whose
+    // handshake errors say nothing about which field is actually wrong.
+    const checks = validateDestination(platform)
+    for (const c of checks) {
+      if (c.level === 'ok') continue
+      this.emit('log', c.level === 'error' ? 'error' : 'warn', `${platform.name}: ${c.detail}`)
     }
-    if (!platform.streamKey.trim()) {
-      this.setStatus(relay, 'error', 'No stream key configured')
-      this.emit('log', 'error', `${platform.name}: no stream key configured`)
+    if (hasErrors(checks)) {
+      this.setStatus(relay, 'error', summarise(checks))
       return
     }
 
     relay.stopping = false
     relay.stderrTail = []
+    relay.wentLive = false
     this.setStatus(relay, 'starting')
 
     const bin = resolveFfmpeg(this.settings)
@@ -306,11 +344,13 @@ export class RelayManager extends EventEmitter {
       const lines = chunk.split(/\r?\n/).filter((l) => l.trim())
       for (const line of lines) {
         relay.stderrTail.push(line)
-        if (relay.stderrTail.length > 12) relay.stderrTail.shift()
-      }
-      if (lines.length) {
-        relay.stats.error = lines[lines.length - 1]
-        this.emit('log', 'warn', `${platform.name}: ${lines[lines.length - 1]}`)
+        if (relay.stderrTail.length > STDERR_TAIL) relay.stderrTail.shift()
+        // A healthy relay still chatters at warning level. Those lines stay in
+        // the tail for the failure report but out of the activity log; anything
+        // logged before the relay is live is worth surfacing immediately.
+        if (relay.wentLive && !SIGNIFICANT.test(line)) continue
+        relay.stats.error = line
+        this.emit('log', relay.wentLive ? 'warn' : 'error', `${platform.name}: ${line}`)
       }
     })
 
@@ -329,7 +369,61 @@ export class RelayManager extends EventEmitter {
         this.emit('log', 'info', `${platform.name}: relay stopped`)
         return
       }
+
       const detail = relay.stderrTail[relay.stderrTail.length - 1] || `ffmpeg exited (${code})`
+
+      // A relay that never reached `live` has a configuration or connectivity
+      // problem, not a blip. Say what ffmpeg actually reported, probe the
+      // network path, and stop retrying rather than hiding the cause in a loop.
+      if (!relay.wentLive) {
+        if (!this.sourcePublishing) {
+          if (!this.settings.autoReconnect) {
+            this.setStatus(relay, 'error', 'No encoder is publishing into the local ingest')
+            this.emit('log', 'error', `${platform.name}: no encoder is publishing yet`)
+            return
+          }
+          this.setStatus(relay, 'reconnecting', 'Waiting for the encoder')
+          this.emit('log', 'info', `${platform.name}: waiting for Streamlabs to publish`)
+          relay.reconnectTimer = setTimeout(
+            () => void this.launch(platformId),
+            Math.max(1, this.settings.reconnectDelay) * 1000
+          )
+          return
+        }
+
+        relay.startFailures += 1
+        if (relay.startFailures === 1) void this.report(relay, args, code)
+
+        const exhausted = relay.startFailures >= MAX_START_FAILURES
+        if (!this.settings.autoReconnect || exhausted) {
+          this.setStatus(relay, 'error', detail)
+          if (exhausted) {
+            this.emit(
+              'log',
+              'error',
+              `${platform.name}: never connected after ${relay.startFailures} attempts - fix the destination, then press Start`
+            )
+          }
+          return
+        }
+        // Back off between attempts. A platform that has just lost a session
+        // often holds it open for another half-minute and rejects a reconnect
+        // with the same key, so hammering every 5 s keeps the loop alive.
+        const delay = Math.min(
+          60,
+          Math.max(1, this.settings.reconnectDelay) * 2 ** (relay.startFailures - 1)
+        )
+        relay.stats.reconnects += 1
+        this.setStatus(relay, 'reconnecting', detail)
+        this.emit(
+          'log',
+          'warn',
+          `${platform.name}: connect attempt ${relay.startFailures} failed - retrying in ${delay}s`
+        )
+        relay.reconnectTimer = setTimeout(() => void this.launch(platformId), delay * 1000)
+        return
+      }
+
       if (this.settings.autoReconnect) {
         relay.stats.reconnects += 1
         this.setStatus(relay, 'reconnecting', detail)
@@ -339,7 +433,7 @@ export class RelayManager extends EventEmitter {
           `${platform.name}: relay dropped - retrying in ${this.settings.reconnectDelay}s`
         )
         relay.reconnectTimer = setTimeout(
-          () => void this.start(platformId),
+          () => void this.launch(platformId),
           Math.max(1, this.settings.reconnectDelay) * 1000
         )
       } else {
@@ -347,6 +441,32 @@ export class RelayManager extends EventEmitter {
         this.emit('log', 'error', `${platform.name}: ${detail}`)
       }
     })
+  }
+
+  /**
+   * Dumps everything known about a failed start: the redacted ffmpeg command,
+   * the captured stderr, and a live probe of the destination edge. This is the
+   * report that used to be missing entirely.
+   */
+  private async report(relay: Relay, args: string[], code: number | null): Promise<void> {
+    const name = relay.platform.name
+    const key = relay.platform.streamKey.trim()
+    const redacted = args
+      .map((a) => (key && a.includes(key) ? a.replace(key, '<stream-key>') : a))
+      .join(' ')
+
+    this.emit('log', 'error', `${name}: relay never connected (ffmpeg exit ${code ?? 'unknown'})`)
+    this.emit('log', 'info', `${name}: command was ffmpeg ${redacted}`)
+    if (relay.stderrTail.length) {
+      for (const line of relay.stderrTail) this.emit('log', 'error', `${name}: ffmpeg | ${line}`)
+    } else {
+      this.emit('log', 'warn', `${name}: ffmpeg exited without printing anything`)
+    }
+
+    for (const check of await probeDestination(relay.platform)) {
+      const level = check.level === 'error' ? 'error' : check.level === 'warn' ? 'warn' : 'info'
+      this.emit('log', level, `${name}: ${check.label} - ${check.detail}`)
+    }
   }
 
   /** Consumes ffmpeg's `-progress` key=value stream. */
@@ -388,6 +508,8 @@ export class RelayManager extends EventEmitter {
         case 'progress': {
           // First progress block means media is actually flowing to the platform.
           if (relay.stats.status === 'starting' || relay.stats.status === 'reconnecting') {
+            relay.wentLive = true
+            relay.startFailures = 0
             this.setStatus(relay, 'live')
             relay.startedAt = Date.now()
             this.emit('log', 'success', `${relay.platform.name}: LIVE`)

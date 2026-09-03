@@ -46,6 +46,13 @@ export interface ChatConfig {
   youtubeVideoId?: string
   /** YouTube channel id, used to auto-discover the active live broadcast. */
   youtubeChannelId?: string
+  /** Kick channel slug, e.g. `xqc` from kick.com/xqc. */
+  kickChannel?: string
+  /**
+   * Numeric Kick chatroom id. Normally resolved from the slug automatically;
+   * set this by hand when Cloudflare blocks the lookup.
+   */
+  kickChatroomId?: string
 }
 
 export interface Platform {
@@ -167,6 +174,23 @@ export interface ChatStatus {
   detail?: string
 }
 
+/** Platforms Hydracast can read a chat feed from without an OAuth login. */
+export const CHAT_CAPABLE: PlatformKind[] = ['twitch', 'youtube', 'kick']
+
+export function supportsChat(kind: PlatformKind): boolean {
+  return CHAT_CAPABLE.includes(kind)
+}
+
+export type CheckLevel = 'ok' | 'warn' | 'error'
+
+/** One line of a destination diagnostic report. */
+export interface CheckResult {
+  /** What was checked, e.g. "DNS" or "Stream key". */
+  label: string
+  level: CheckLevel
+  detail: string
+}
+
 export interface LogEntry {
   id: string
   timestamp: number
@@ -191,6 +215,17 @@ export interface PresetTarget {
   /** Recommended max video bitrate for the platform, kbps. */
   recommendedBitrate: number
   helpUrl: string
+  /**
+   * True when the platform issues every channel its own ingest host, so there is
+   * no shared URL that can ship as a working default.
+   */
+  perChannelIngest?: boolean
+  /** Example of a valid ingest URL, shown as the input placeholder. */
+  urlPlaceholder?: string
+  /** Host suffix every valid ingest URL must end with. Checked before starting. */
+  urlHostSuffix?: string
+  /** Explains where to find the ingest URL when it is per-channel. */
+  urlHint?: string
 }
 
 export const PLATFORM_PRESETS: PresetTarget[] = [
@@ -211,9 +246,16 @@ export const PLATFORM_PRESETS: PresetTarget[] = [
   {
     kind: 'kick',
     name: 'Kick',
-    url: 'rtmps://fa723fc1b171.global-contribute.live-video.net:443/app',
+    // Kick runs on Amazon IVS, which hands every channel its own contribute
+    // host - there is no shared default that would work for anyone else.
+    url: '',
     recommendedBitrate: 8000,
-    helpUrl: 'https://kick.com/dashboard/settings/stream'
+    helpUrl: 'https://kick.com/dashboard/settings/stream',
+    perChannelIngest: true,
+    urlPlaceholder: 'rtmps://xxxxxxxxxxxx.global-contribute.live-video.net:443/app',
+    urlHostSuffix: '.global-contribute.live-video.net',
+    urlHint:
+      'Kick gives every channel its own ingest host. Copy the full Stream URL from your Kick dashboard - a URL from any other channel will reject your key.'
   },
   {
     kind: 'facebook',

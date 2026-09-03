@@ -1,6 +1,6 @@
 {
   "name": "hydracast",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "description": "Hydracast - free multi-platform live broadcast relay for Streamlabs / OBS",
   "main": "./out/main/index.js",
   "author": {

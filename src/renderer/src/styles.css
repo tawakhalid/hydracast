@@ -1539,3 +1539,45 @@ select.input option {
   color: var(--text-faint);
   grid-column: 1 / -1;
 }
+
+/* Destination diagnostic report, rendered under the Test button. */
+.check-report {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  margin: 2px 0 12px;
+  padding: 9px 11px;
+  border: 1px solid var(--border);
+  border-radius: 9px;
+  background: rgba(255, 255, 255, 0.02);
+}
+
+.check-row {
+  display: grid;
+  grid-template-columns: 14px auto 1fr;
+  align-items: start;
+  gap: 8px;
+  font-size: 11.5px;
+  line-height: 1.5;
+  color: var(--text-dim);
+}
+
+.check-row strong {
+  font-weight: 700;
+  color: var(--text);
+  white-space: nowrap;
+}
+
+.check-row.ok > svg {
+  color: var(--ok, #38d39f);
+}
+
+.check-row.warn > svg,
+.check-row.warn strong {
+  color: var(--warn, #f5b944);
+}
+
+.check-row.error > svg,
+.check-row.error strong {
+  color: var(--live, #ff4d6a);
+}

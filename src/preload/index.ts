@@ -2,6 +2,7 @@ import { contextBridge, ipcRenderer } from 'electron'
 import type {
   AppConfig,
   ChatMessage,
+  CheckResult,
   LogEntry,
   Platform,
   PlatformKind,
@@ -17,6 +18,8 @@ const api = {
   addPlatform: (kind: PlatformKind): Promise<AppConfig> => ipcRenderer.invoke('platform:add', kind),
   removePlatform: (id: string): Promise<AppConfig> => ipcRenderer.invoke('platform:remove', id),
 
+  testRelay: (platform: Platform): Promise<CheckResult[]> =>
+    ipcRenderer.invoke('relay:test', platform),
   startRelay: (id: string): Promise<void> => ipcRenderer.invoke('relay:start', id),
   stopRelay: (id: string): Promise<void> => ipcRenderer.invoke('relay:stop', id),
   startBroadcast: (): Promise<void> => ipcRenderer.invoke('broadcast:start'),

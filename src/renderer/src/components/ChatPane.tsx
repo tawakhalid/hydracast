@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { AnimatePresence, motion } from 'framer-motion'
 import type { ChatMessage, ChatStatus, Platform } from '@shared/types'
+import { supportsChat } from '@shared/types'
 import { ChatIcon, PlatformIcon, PLATFORM_COLORS, RefreshIcon, TrashIcon } from '../icons'
 
 interface Props {
@@ -30,10 +31,7 @@ export default function ChatPane({
   const [muted, setMuted] = useState<Set<string>>(new Set())
   const [pinned, setPinned] = useState(true)
 
-  const chatPlatforms = useMemo(
-    () => platforms.filter((p) => p.kind === 'twitch' || p.kind === 'youtube'),
-    [platforms]
-  )
+  const chatPlatforms = useMemo(() => platforms.filter((p) => supportsChat(p.kind)), [platforms])
 
   const visible = useMemo(
     () =>
@@ -83,7 +81,7 @@ export default function ChatPane({
       <div className="chat-filters">
         {chatPlatforms.length === 0 && (
           <span style={{ fontSize: 11.5, color: 'var(--text-faint)', padding: '4px 2px' }}>
-            Add a Twitch or YouTube destination to read chat.
+            Add a Twitch, YouTube or Kick destination to read chat.
           </span>
         )}
         {chatPlatforms.map((p) => {

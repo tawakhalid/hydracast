@@ -95,15 +95,45 @@ re-encode a 4000k copy for Facebook — one capture, two very different outputs.
 
 ## Chat
 
-Twitch and YouTube messages are merged into one feed, each tagged with its platform icon and the
-timestamp the platform itself assigned to the message.
+Twitch, YouTube and Kick messages are merged into one feed, each tagged with its platform icon
+and the timestamp the platform itself assigned to the message.
 
 - **Twitch** — anonymous read-only IRC. Just enter the channel name; no token, no login.
 - **YouTube** — needs a YouTube Data API v3 key. Give it a video id or a channel id (the channel
   id auto-discovers the active broadcast). Polling honours the interval the API returns so it
   does not burn quota.
+- **Kick** — read-only over Kick's public Pusher socket; enter the channel name, no login. The
+  chatroom id is looked up automatically, but that lookup sits behind Cloudflare. If the feed
+  reports a challenge, open `kick.com/api/v2/channels/<your-channel>` in a browser and paste the
+  `chatroom.id` into the Chat tab. Kick does not document this endpoint, so it can change without
+  notice — the connector reports exactly what broke rather than showing an empty feed.
+
+Facebook, Trovo and TikTok are relay-only: their chat needs an OAuth app registration, which
+Hydracast deliberately avoids.
 
 Click a platform chip to mute that source in the feed, double-click it to reconnect.
+
+---
+
+## When a destination will not connect
+
+Every relay is checked before ffmpeg is launched, and **Test destination** in the settings editor
+runs the same checks on demand — it validates the URL and key, resolves the host, opens a TCP
+connection and completes the TLS handshake, reporting each step. Anything that fails lands in the
+Activity log along with ffmpeg's own stderr and the exact command that was run, with the stream
+key redacted.
+
+A relay that never reaches `live` is treated as a configuration problem, not a blip: it retries
+with a widening back-off and then stops, so the cause stays on screen instead of being buried
+under an endless "reconnecting".
+
+**Kick specifically.** Kick runs on Amazon IVS, which issues every channel its own ingest host,
+so there is no shared URL that works for anyone else — copy the full Stream URL from your Kick
+dashboard. IVS is also stricter than Twitch: it terminates any session whose keyframe interval
+exceeds 2 seconds or whose bitrate is over the channel ceiling, and it holds a session open for
+up to a minute after a disconnect, rejecting reconnects with the same key in the meantime. In
+passthrough mode the keyframe interval is whatever Streamlabs sends, so set Streamlabs to 2 s
+or switch the destination to re-encode.
 
 ---
 
@@ -141,7 +171,8 @@ src/
     relay.ts       per-platform ffmpeg processes, stats, reconnect
     latency.ts     TCP round-trip probe
     config.ts      persisted settings (userData/hydracast.config.json)
-    chat/          Twitch IRC + YouTube live chat connectors
+    diagnose.ts    destination config + DNS/TCP/TLS checks
+    chat/          Twitch IRC, YouTube live chat and Kick Pusher connectors
   preload/       context-isolated IPC bridge
   renderer/      React UI
   shared/        types shared across the bridge
@@ -159,7 +190,7 @@ community forever - if it saves you a subscription, that is the whole point.
 
 Ideas that would help most:
 
-- Chat connectors for Kick and Trovo
+- A chat connector for Trovo
 - Per-destination audio track selection
 - Stream health alerts (desktop notification when a platform drops)
 - macOS and Linux builds

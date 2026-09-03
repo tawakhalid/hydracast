@@ -1,8 +1,16 @@
 import { useEffect, useState } from 'react'
 import { AnimatePresence, motion } from 'framer-motion'
-import type { AppConfig, AppSettings, EncoderKind, Platform, PlatformKind } from '@shared/types'
-import { PLATFORM_PRESETS } from '@shared/types'
+import type {
+  AppConfig,
+  AppSettings,
+  CheckResult,
+  EncoderKind,
+  Platform,
+  PlatformKind
+} from '@shared/types'
+import { PLATFORM_PRESETS, supportsChat } from '@shared/types'
 import {
+  AlertIcon,
   CheckIcon,
   ChevronIcon,
   CloseIcon,
@@ -66,6 +74,8 @@ export default function SettingsModal({
   const [draft, setDraft] = useState<AppConfig>(() => structuredClone(config))
   const [openId, setOpenId] = useState<string | null>(focusPlatformId ?? config.platforms[0]?.id ?? null)
   const [revealed, setRevealed] = useState<Set<string>>(new Set())
+  const [testing, setTesting] = useState<string | null>(null)
+  const [reports, setReports] = useState<Record<string, CheckResult[]>>({})
   const [showAdd, setShowAdd] = useState(false)
 
   // Platforms can be added or removed from outside the modal (main process owns
@@ -110,7 +120,17 @@ export default function SettingsModal({
       return next
     })
 
-  const chatPlatforms = draft.platforms.filter((p) => p.kind === 'twitch' || p.kind === 'youtube')
+  const chatPlatforms = draft.platforms.filter((p) => supportsChat(p.kind))
+
+  const runTest = async (platform: Platform): Promise<void> => {
+    setTesting(platform.id)
+    try {
+      const checks = await window.hydracast.testRelay(platform)
+      setReports((prev) => ({ ...prev, [platform.id]: checks }))
+    } finally {
+      setTesting(null)
+    }
+  }
 
   return (
     <motion.div
@@ -230,10 +250,15 @@ export default function SettingsModal({
                             <label>RTMP ingest URL</label>
                             <input
                               className="input mono"
-                              placeholder="rtmp://live.twitch.tv/app"
+                              placeholder={preset?.urlPlaceholder ?? 'rtmp://live.twitch.tv/app'}
                               value={p.url}
                               onChange={(e) => patchPlatform(p.id, { url: e.target.value })}
                             />
+                            {preset?.urlHint && (
+                              <div className="hint" style={{ marginTop: 6 }}>
+                                {preset.urlHint}
+                              </div>
+                            )}
                           </div>
 
                           <div className="field">
@@ -266,6 +291,39 @@ export default function SettingsModal({
                               </div>
                             </div>
                           </div>
+
+                          <div
+                            style={{
+                              display: 'flex',
+                              alignItems: 'center',
+                              gap: 10,
+                              margin: '2px 0 4px'
+                            }}
+                          >
+                            <button
+                              className="btn sm ghost"
+                              disabled={testing === p.id}
+                              onClick={() => void runTest(p)}
+                              title="Check the URL, key and network path to this destination"
+                            >
+                              {testing === p.id ? 'Testing...' : 'Test destination'}
+                            </button>
+                            <span className="hint" style={{ margin: 0 }}>
+                              Resolves the host, opens a connection and reports what fails.
+                            </span>
+                          </div>
+
+                          {reports[p.id] && (
+                            <div className="check-report">
+                              {reports[p.id].map((c, i) => (
+                                <div key={i} className={`check-row ${c.level}`}>
+                                  {c.level === 'ok' ? <CheckIcon size={12} /> : <AlertIcon size={12} />}
+                                  <strong>{c.label}</strong>
+                                  <span>{c.detail}</span>
+                                </div>
+                              ))}
+                            </div>
+                          )}
 
                           <div className="section-label">Video</div>
 
@@ -489,8 +547,8 @@ export default function SettingsModal({
             <>
               {chatPlatforms.length === 0 && (
                 <div className="hint">
-                  Chat reading is available for Twitch and YouTube destinations. Add one on the
-                  Destinations tab.
+                  Chat reading is available for Twitch, YouTube and Kick destinations. Add one on
+                  the Destinations tab.
                 </div>
               )}
               {chatPlatforms.map((p) => (
@@ -511,7 +569,7 @@ export default function SettingsModal({
                     />
                   </div>
 
-                  {p.kind === 'twitch' ? (
+                  {p.kind === 'twitch' && (
                     <div className="field" style={{ marginBottom: 0 }}>
                       <label>Twitch channel</label>
                       <input
@@ -524,7 +582,38 @@ export default function SettingsModal({
                         Read-only anonymous connection &mdash; no login or token required.
                       </div>
                     </div>
-                  ) : (
+                  )}
+
+                  {p.kind === 'kick' && (
+                    <>
+                      <div className="field">
+                        <label>Kick channel</label>
+                        <input
+                          className="input mono"
+                          placeholder="your_channel_name"
+                          value={p.chat.kickChannel ?? ''}
+                          onChange={(e) => patchChat(p.id, { kickChannel: e.target.value })}
+                        />
+                      </div>
+                      <div className="field" style={{ marginBottom: 0 }}>
+                        <label>Chatroom id (only if the lookup is blocked)</label>
+                        <input
+                          className="input mono"
+                          placeholder="auto-detected from the channel name"
+                          value={p.chat.kickChatroomId ?? ''}
+                          onChange={(e) => patchChat(p.id, { kickChatroomId: e.target.value })}
+                        />
+                      </div>
+                      <div className="hint" style={{ marginTop: 8 }}>
+                        Read-only, no login required. Kick puts the channel lookup behind
+                        Cloudflare, so if the feed reports a challenge, open{' '}
+                        <span className="mono">kick.com/api/v2/channels/your_channel</span> in a
+                        browser and paste the <span className="mono">chatroom.id</span> above.
+                      </div>
+                    </>
+                  )}
+
+                  {p.kind === 'youtube' && (
                     <>
                       <div className="field">
                         <label>YouTube Data API key</label>

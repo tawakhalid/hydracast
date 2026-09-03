@@ -19,6 +19,7 @@ import {
   updatePlatform
 } from './config'
 import { IngestServer } from './ingest'
+import { checkDestination } from './diagnose'
 import { detectEncoders, RelayManager, resolveFfmpeg } from './relay'
 import { ChatManager } from './chat/manager'
 
@@ -106,13 +107,17 @@ async function bootServices(): Promise<void> {
   ingest.on('publish-start', () => {
     const state = ingest.getState()
     relays.setSource(ingest.localSourceUrl, state.fps)
+    relays.setSourcePublishing(true)
     send('ingest-publish', true)
     if (getConfig().settings.autoStartOnIngest) {
       log('info', 'relay', 'Encoder detected - auto-starting enabled destinations')
       void startBroadcast()
     }
   })
-  ingest.on('publish-stop', () => send('ingest-publish', false))
+  ingest.on('publish-stop', () => {
+    relays.setSourcePublishing(false)
+    send('ingest-publish', false)
+  })
 
   relays.on('log', (level: LogEntry['level'], message: string) => log(level, 'relay', message))
   relays.on('status', () => send('snapshot', snapshot()))
@@ -141,6 +146,7 @@ async function startBroadcast(): Promise<void> {
   const config = getConfig()
   const state = ingest.getState()
   relays.setSource(ingest.localSourceUrl, state.fps)
+  relays.setSourcePublishing(state.publishing)
   if (!state.publishing) {
     log('warn', 'relay', 'No encoder is publishing yet - relays will retry until Streamlabs connects')
   }
@@ -216,6 +222,17 @@ function registerIpc(): void {
     const saved = removePlatform(id)
     relays.syncPlatforms(saved.platforms)
     return saved
+  })
+
+  // Takes the platform by value rather than by id so the settings screen can
+  // test unsaved edits.
+  ipcMain.handle('relay:test', async (_e, platform: Platform) => {
+    const checks = await checkDestination(platform)
+    for (const c of checks) {
+      const level = c.level === 'error' ? 'error' : c.level === 'warn' ? 'warn' : 'info'
+      log(level, 'relay', `${platform.name}: ${c.label} - ${c.detail}`)
+    }
+    return checks
   })
 
   ipcMain.handle('relay:start', (_e, id: string) => relays.start(id))
