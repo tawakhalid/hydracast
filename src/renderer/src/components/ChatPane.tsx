@@ -1,13 +1,41 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { AnimatePresence, motion } from 'framer-motion'
-import type { ChatMessage, ChatStatus, Platform } from '@shared/types'
+import type { ChatMessage, ChatStatus, LayoutPreset, Platform } from '@shared/types'
 import { supportsChat } from '@shared/types'
-import { ChatIcon, PlatformIcon, PLATFORM_COLORS, RefreshIcon, TrashIcon } from '../icons'
+import LayoutMenu from './LayoutMenu'
+import {
+  ChatIcon,
+  EyeIcon,
+  EyeOffIcon,
+  PlatformIcon,
+  PLATFORM_COLORS,
+  RefreshIcon,
+  TrashIcon
+} from '../icons'
+
+/** Bounds for the chat text-size slider, px. */
+const MIN_FS = 11
+const MAX_FS = 26
 
 interface Props {
   messages: ChatMessage[]
   platforms: Platform[]
   chatStatus: Record<string, ChatStatus>
+  /** Message text size in px; everything in a row scales off it. */
+  fontSize: number
+  onFontSize: (size: number) => void
+  /**
+   * Preview visibility. Omitted where there is no preview to toggle - the
+   * full-screen chat view - and the control is then not rendered.
+   */
+  showPreview?: boolean
+  onTogglePreview?: () => void
+  layouts: LayoutPreset[]
+  activeLayoutId: string
+  onSelectLayout: (id: string) => void
+  onCreateLayout: (name: string) => void
+  onRenameLayout: (id: string, name: string) => void
+  onDeleteLayout: (id: string) => void
   onClear: () => void
   onReconnect: (platformId: string) => void
 }
@@ -24,12 +52,28 @@ export default function ChatPane({
   messages,
   platforms,
   chatStatus,
+  fontSize,
+  onFontSize,
+  showPreview,
+  onTogglePreview,
+  layouts,
+  activeLayoutId,
+  onSelectLayout,
+  onCreateLayout,
+  onRenameLayout,
+  onDeleteLayout,
   onClear,
   onReconnect
 }: Props) {
   const listRef = useRef<HTMLDivElement>(null)
   const [muted, setMuted] = useState<Set<string>>(new Set())
   const [pinned, setPinned] = useState(true)
+  const [sizeOpen, setSizeOpen] = useState(false)
+  // Track the drag locally and commit on release, so dragging does not write
+  // the config file on every pixel.
+  const [draftSize, setDraftSize] = useState(fontSize)
+  const [dragging, setDragging] = useState(false)
+  const shownSize = dragging ? draftSize : fontSize
 
   const chatPlatforms = useMemo(() => platforms.filter((p) => supportsChat(p.kind)), [platforms])
 
@@ -65,7 +109,10 @@ export default function ChatPane({
   const connectedCount = Object.values(chatStatus).filter((s) => s.state === 'connected').length
 
   return (
-    <div className="panel chat" style={{ position: 'relative' }}>
+    <div
+      className="panel chat"
+      style={{ position: 'relative', ['--chat-fs' as string]: `${shownSize}px` }}
+    >
       <div className="panel-head">
         <ChatIcon size={16} />
         <span className="panel-title">Audience Chat</span>
@@ -73,10 +120,81 @@ export default function ChatPane({
         <span className="pill" style={{ height: 22, fontSize: 11 }}>
           {visible.length}
         </span>
+        <LayoutMenu
+          layouts={layouts}
+          activeId={activeLayoutId}
+          onSelect={onSelectLayout}
+          onCreate={onCreateLayout}
+          onRename={onRenameLayout}
+          onDelete={onDeleteLayout}
+        />
+        {onTogglePreview && (
+          <button
+            className="btn icon sm ghost"
+            onClick={onTogglePreview}
+            title={showPreview ? 'Hide the video preview' : 'Show the video preview'}
+          >
+            {showPreview ? <EyeIcon /> : <EyeOffIcon />}
+          </button>
+        )}
+        <button
+          className={`btn icon sm ghost ${sizeOpen ? 'active' : ''}`}
+          onClick={() => setSizeOpen((v) => !v)}
+          title="Adjust chat text size"
+        >
+          <span style={{ fontWeight: 800, fontSize: 13, letterSpacing: '-0.03em' }}>Aa</span>
+        </button>
         <button className="btn icon sm ghost" onClick={onClear} title="Clear chat history">
           <TrashIcon size={14} />
         </button>
       </div>
+
+      <AnimatePresence initial={false}>
+        {sizeOpen && (
+          <motion.div
+            initial={{ height: 0, opacity: 0 }}
+            animate={{ height: 'auto', opacity: 1 }}
+            exit={{ height: 0, opacity: 0 }}
+            transition={{ duration: 0.2, ease: [0.22, 1, 0.36, 1] }}
+            style={{ overflow: 'hidden' }}
+          >
+            <div className="chat-size">
+              <span className="chat-size-label" style={{ fontSize: MIN_FS }}>
+                A
+              </span>
+              <input
+                type="range"
+                min={MIN_FS}
+                max={MAX_FS}
+                step={0.5}
+                value={shownSize}
+                onPointerDown={() => {
+                  setDraftSize(fontSize)
+                  setDragging(true)
+                }}
+                onChange={(e) => setDraftSize(Number(e.target.value))}
+                onPointerUp={() => {
+                  setDragging(false)
+                  onFontSize(draftSize)
+                }}
+                onKeyUp={() => {
+                  setDragging(false)
+                  onFontSize(draftSize)
+                }}
+                style={{
+                  background: `linear-gradient(90deg, var(--accent) ${
+                    ((shownSize - MIN_FS) / (MAX_FS - MIN_FS)) * 100
+                  }%, rgba(255,255,255,0.1) ${((shownSize - MIN_FS) / (MAX_FS - MIN_FS)) * 100}%)`
+                }}
+              />
+              <span className="chat-size-label" style={{ fontSize: 18 }}>
+                A
+              </span>
+              <span className="chat-size-value">{shownSize}px</span>
+            </div>
+          </motion.div>
+        )}
+      </AnimatePresence>
 
       <div className="chat-filters">
         {chatPlatforms.length === 0 && (
@@ -126,7 +244,7 @@ export default function ChatPane({
               <span className="msg-time">{fmtTime(m.timestamp)}</span>
               <div className="msg-body">
                 <span className="msg-plat" style={{ ['--pc' as string]: PLATFORM_COLORS[m.platformKind] }}>
-                  <PlatformIcon kind={m.platformKind} size={10} />
+                  <PlatformIcon kind={m.platformKind} size={Math.round(shownSize * 0.74)} />
                 </span>
                 {m.isOwner && <span className="msg-badge owner">host</span>}
                 {m.isModerator && <span className="msg-badge mod">mod</span>}

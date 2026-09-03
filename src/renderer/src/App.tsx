@@ -2,11 +2,14 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { AnimatePresence, motion } from 'framer-motion'
 import type {
   AppConfig,
+  AppSettings,
   ChatMessage,
+  LayoutPreset,
   LogEntry,
   PlatformKind,
   Snapshot
 } from '@shared/types'
+import { DEFAULT_LAYOUT_ID, layoutValuesOf, uniqueLayoutName } from '@shared/types'
 import {
   AlertIcon,
   BroadcastIcon,
@@ -28,6 +31,10 @@ import ChatPane from './components/ChatPane'
 import SettingsModal from './components/SettingsModal'
 
 type View = 'broadcast' | 'chat' | 'logs'
+
+/** Bounds for the draggable chat column, px. */
+const MIN_CHAT_W = 280
+const MAX_CHAT_W = 820
 
 const emptySnapshot: Snapshot = {
   ingest: {
@@ -60,6 +67,9 @@ export default function App() {
   const [snapshot, setSnapshot] = useState<Snapshot>(emptySnapshot)
   const [messages, setMessages] = useState<ChatMessage[]>([])
   const [logs, setLogs] = useState<LogEntry[]>([])
+  const workspaceRef = useRef<HTMLDivElement>(null)
+  const [dragWidth, setDragWidth] = useState<number | null>(null)
+  const [resizing, setResizing] = useState(false)
   const [view, setView] = useState<View>('broadcast')
   const [settingsOpen, setSettingsOpen] = useState(false)
   const [focusPlatform, setFocusPlatform] = useState<string | null>(null)
@@ -151,6 +161,114 @@ export default function App() {
     toast(`${label} copied`)
   }
 
+  /**
+   * Writes settings, mirroring any layout-owned value into the active layout so
+   * that adjusting a control edits the layout you are looking at rather than
+   * drifting away from it.
+   */
+  const patchSettings = (patch: Partial<AppSettings>): void => {
+    if (!config) return
+    const settings = { ...config.settings, ...patch }
+    const touchesLayout =
+      'chatFontSize' in patch || 'chatWidth' in patch || 'showPreview' in patch
+    const layouts = touchesLayout
+      ? settings.layouts.map((l) =>
+          l.id === settings.activeLayoutId ? { ...l, ...layoutValuesOf(settings) } : l
+        )
+      : settings.layouts
+    void saveConfig({ ...config, settings: { ...settings, layouts } })
+  }
+
+  const selectLayout = (id: string): void => {
+    if (!config) return
+    const preset = config.settings.layouts.find((l) => l.id === id)
+    if (!preset) return
+    void saveConfig({
+      ...config,
+      settings: { ...config.settings, activeLayoutId: id, ...layoutValuesOf(preset) }
+    })
+  }
+
+  const createLayout = (name: string): void => {
+    if (!config) return
+    const unique = uniqueLayoutName(name, config.settings.layouts)
+    const preset: LayoutPreset = {
+      id: `layout-${Date.now().toString(36)}`,
+      name: unique,
+      ...layoutValuesOf(config.settings)
+    }
+    void saveConfig({
+      ...config,
+      settings: {
+        ...config.settings,
+        layouts: [...config.settings.layouts, preset],
+        activeLayoutId: preset.id
+      }
+    })
+    toast(`Layout "${unique}" saved`)
+  }
+
+  const renameLayout = (id: string, name: string): void => {
+    if (!config) return
+    const target = config.settings.layouts.find((l) => l.id === id)
+    if (!target || target.builtIn) return
+    const unique = uniqueLayoutName(name, config.settings.layouts, id)
+    void saveConfig({
+      ...config,
+      settings: {
+        ...config.settings,
+        layouts: config.settings.layouts.map((l) => (l.id === id ? { ...l, name: unique } : l))
+      }
+    })
+  }
+
+  const deleteLayout = (id: string): void => {
+    if (!config) return
+    const target = config.settings.layouts.find((l) => l.id === id)
+    // The built-in is the guaranteed fallback and is never removable.
+    if (!target || target.builtIn) return
+    const layouts = config.settings.layouts.filter((l) => l.id !== id)
+    const fallback = layouts.find((l) => l.id === DEFAULT_LAYOUT_ID) ?? layouts[0]
+    const wasActive = config.settings.activeLayoutId === id
+    void saveConfig({
+      ...config,
+      settings: {
+        ...config.settings,
+        layouts,
+        activeLayoutId: wasActive ? fallback.id : config.settings.activeLayoutId,
+        ...(wasActive ? layoutValuesOf(fallback) : {})
+      }
+    })
+    toast(`Layout "${target.name}" removed`)
+  }
+
+  /**
+   * Drags the chat column wider or narrower. The width is tracked locally for
+   * the duration of the drag and written to the config once on release, so a
+   * resize costs one IPC round trip rather than one per pointer move.
+   */
+  const startResize = (e: React.PointerEvent): void => {
+    e.preventDefault()
+    const el = workspaceRef.current
+    if (!el) return
+    const right = el.getBoundingClientRect().right
+    const clamp = (x: number): number =>
+      Math.round(Math.min(MAX_CHAT_W, Math.max(MIN_CHAT_W, right - x)))
+
+    setResizing(true)
+    const onMove = (ev: PointerEvent): void => setDragWidth(clamp(ev.clientX))
+    const onUp = (ev: PointerEvent): void => {
+      window.removeEventListener('pointermove', onMove)
+      window.removeEventListener('pointerup', onUp)
+      const next = clamp(ev.clientX)
+      setResizing(false)
+      setDragWidth(null)
+      patchSettings({ chatWidth: next })
+    }
+    window.addEventListener('pointermove', onMove)
+    window.addEventListener('pointerup', onUp)
+  }
+
   /** Flattens the activity log into something pasteable into a bug report. */
   const logsAsText = (entries: LogEntry[]): string =>
     entries
@@ -161,6 +279,8 @@ export default function App() {
       .join('\n')
 
   const platforms = config?.platforms ?? []
+  // The dragged width wins while a drag is in flight; the saved one otherwise.
+  const chatWidth = dragWidth ?? config?.settings.chatWidth ?? MIN_CHAT_W
   const liveCount = useMemo(
     () => Object.values(snapshot.relays).filter((r) => r.status === 'live').length,
     [snapshot.relays]
@@ -378,7 +498,7 @@ export default function App() {
 
           {/* views */}
           {view === 'broadcast' && (
-            <div className="workspace">
+            <div className="workspace" ref={workspaceRef}>
               <div className="workspace-left">
                 {config.settings.showPreview && (
                   <PreviewPane
@@ -421,11 +541,29 @@ export default function App() {
                 </div>
               </div>
 
-              <div className="chat-column">
+              <div
+                className={`splitter ${resizing ? 'dragging' : ''}`}
+                onPointerDown={startResize}
+                title="Drag to resize the chat column"
+              />
+
+              <div className="chat-column" style={{ width: chatWidth }}>
                 <ChatPane
                   messages={messages}
                   platforms={platforms}
                   chatStatus={snapshot.chatStatus}
+                  fontSize={config.settings.chatFontSize}
+                  onFontSize={(chatFontSize) => patchSettings({ chatFontSize })}
+                  layouts={config.settings.layouts}
+                  activeLayoutId={config.settings.activeLayoutId}
+                  onSelectLayout={selectLayout}
+                  onCreateLayout={createLayout}
+                  onRenameLayout={renameLayout}
+                  onDeleteLayout={deleteLayout}
+                  showPreview={config.settings.showPreview}
+                  onTogglePreview={() =>
+                    patchSettings({ showPreview: !config.settings.showPreview })
+                  }
                   onClear={() => {
                     void window.hydracast.clearChat()
                     setMessages([])
@@ -445,6 +583,14 @@ export default function App() {
                 messages={messages}
                 platforms={platforms}
                 chatStatus={snapshot.chatStatus}
+                fontSize={config.settings.chatFontSize}
+                onFontSize={(chatFontSize) => patchSettings({ chatFontSize })}
+                layouts={config.settings.layouts}
+                activeLayoutId={config.settings.activeLayoutId}
+                onSelectLayout={selectLayout}
+                onCreateLayout={createLayout}
+                onRenameLayout={renameLayout}
+                onDeleteLayout={deleteLayout}
                 onClear={() => {
                   void window.hydracast.clearChat()
                   setMessages([])

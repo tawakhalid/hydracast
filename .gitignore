@@ -4,6 +4,7 @@ release/
 dist/
 test/.pipeline.cjs
 test/.kick.cjs
+test/.layout.cjs
 *.tsbuildinfo
 *.log
 .env

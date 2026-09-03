@@ -362,9 +362,26 @@ select {
 }
 
 .chat-column {
-  width: 380px;
+  /* Width is driven by settings.chatWidth and dragged via .splitter. */
   flex-shrink: 0;
   display: flex;
+  min-width: 0;
+}
+
+/* Drag handle between the broadcast workspace and the chat column. */
+.splitter {
+  width: 5px;
+  flex-shrink: 0;
+  align-self: stretch;
+  border-radius: 3px;
+  cursor: col-resize;
+  background: transparent;
+  transition: background 0.15s ease;
+}
+
+.splitter:hover,
+.splitter.dragging {
+  background: linear-gradient(180deg, var(--accent), var(--accent-2));
 }
 
 /* ============================================================
@@ -1116,7 +1133,7 @@ input[type='range']::-webkit-slider-thumb:hover {
 
 .msg-time {
   font-family: var(--mono);
-  font-size: 10.5px;
+  font-size: calc(var(--chat-fs, 13.5px) * 0.78);
   color: var(--text-faint);
   padding-top: 2px;
   flex-shrink: 0;
@@ -1133,8 +1150,8 @@ input[type='range']::-webkit-slider-thumb:hover {
 .msg-plat {
   display: inline-grid;
   place-items: center;
-  width: 15px;
-  height: 15px;
+  width: calc(var(--chat-fs, 13.5px) * 1.11);
+  height: calc(var(--chat-fs, 13.5px) * 1.11);
   border-radius: 4px;
   margin-right: 6px;
   vertical-align: -3px;
@@ -1144,13 +1161,13 @@ input[type='range']::-webkit-slider-thumb:hover {
 
 .msg-author {
   font-weight: 700;
-  font-size: 13px;
+  font-size: calc(var(--chat-fs, 13.5px) * 0.96);
   margin-right: 5px;
 }
 
 .msg-badge {
   display: inline-block;
-  font-size: 9px;
+  font-size: calc(var(--chat-fs, 13.5px) * 0.67);
   font-weight: 800;
   letter-spacing: 0.06em;
   text-transform: uppercase;
@@ -1175,7 +1192,7 @@ input[type='range']::-webkit-slider-thumb:hover {
 }
 
 .msg-text {
-  font-size: 13.5px;
+  font-size: var(--chat-fs, 13.5px);
   color: #dbe0ee;
   word-wrap: break-word;
   overflow-wrap: anywhere;
@@ -1589,4 +1606,164 @@ select.input option {
 .check-row.error > svg,
 .check-row.error strong {
   color: var(--live, #ff4d6a);
+}
+
+/* Chat text-size control, revealed from the chat panel header. */
+.chat-size {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 7px 12px 9px;
+  border-bottom: 1px solid var(--stroke);
+}
+
+.chat-size input[type='range'] {
+  flex: 1;
+  height: 4px;
+  appearance: none;
+  border-radius: 3px;
+  background: rgba(255, 255, 255, 0.1);
+  outline: none;
+}
+
+.chat-size input[type='range']::-webkit-slider-thumb {
+  appearance: none;
+  width: 13px;
+  height: 13px;
+  border-radius: 50%;
+  background: var(--accent);
+  cursor: pointer;
+  box-shadow: 0 0 0 3px rgba(124, 92, 255, 0.2);
+}
+
+.chat-size .chat-size-value {
+  font-family: var(--mono);
+  font-size: 11px;
+  color: var(--text-dim);
+  min-width: 42px;
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+}
+
+.chat-size .chat-size-label {
+  font-weight: 800;
+  color: var(--text-faint);
+  letter-spacing: -0.02em;
+  flex-shrink: 0;
+}
+
+/* Layout preset switcher in the chat header. */
+.layout-menu {
+  position: relative;
+}
+
+.layout-menu .layout-name {
+  max-width: 110px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-weight: 600;
+}
+
+.layout-pop {
+  position: absolute;
+  top: calc(100% + 7px);
+  right: 0;
+  z-index: 30;
+  width: 268px;
+  padding: 8px;
+  border-radius: var(--r-md);
+  border: 1px solid var(--stroke-hi);
+  background: var(--panel-solid);
+  box-shadow: var(--shadow);
+}
+
+.layout-pop-label {
+  font-size: 10px;
+  font-weight: 800;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--text-faint);
+  padding: 2px 6px 7px;
+}
+
+.layout-row {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  border-radius: 8px;
+}
+
+.layout-row.active {
+  background: rgba(124, 92, 255, 0.14);
+}
+
+.layout-row:hover {
+  background: rgba(255, 255, 255, 0.05);
+}
+
+.layout-pick {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  padding: 7px 8px;
+  font-size: 12.5px;
+  color: var(--text);
+  text-align: left;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.layout-tick {
+  width: 12px;
+  display: grid;
+  place-items: center;
+  color: var(--accent);
+  flex-shrink: 0;
+}
+
+.layout-lock {
+  margin-left: auto;
+  font-size: 9.5px;
+  font-weight: 700;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+  color: var(--text-faint);
+  flex-shrink: 0;
+}
+
+.layout-new {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  margin-top: 7px;
+  padding-top: 8px;
+  border-top: 1px solid var(--stroke);
+}
+
+.input.sm {
+  height: 28px;
+  padding: 0 9px;
+  font-size: 12px;
+  flex: 1;
+  min-width: 0;
+  border-radius: 8px;
+  border: 1px solid var(--stroke);
+  background: rgba(255, 255, 255, 0.04);
+  color: var(--text);
+  outline: none;
+}
+
+.input.sm:focus {
+  border-color: var(--accent);
+}
+
+.layout-hint {
+  font-size: 10.5px;
+  line-height: 1.45;
+  color: var(--text-faint);
+  padding: 8px 6px 2px;
 }

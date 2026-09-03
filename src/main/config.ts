@@ -6,6 +6,7 @@ import {
   AppConfig,
   DEFAULT_SETTINGS,
   DEFAULT_VIDEO,
+  ensureLayouts,
   Platform,
   PLATFORM_PRESETS,
   PlatformKind
@@ -45,7 +46,7 @@ function defaultConfig(): AppConfig {
  */
 function migrate(raw: Partial<AppConfig>): AppConfig {
   const base = defaultConfig()
-  const settings = { ...base.settings, ...(raw.settings ?? {}) }
+  const settings = ensureLayouts({ ...base.settings, ...(raw.settings ?? {}) })
   const platforms = (raw.platforms ?? base.platforms).map((p) => ({
     ...p,
     id: p.id || randomUUID(),

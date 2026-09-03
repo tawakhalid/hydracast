@@ -113,6 +113,16 @@ Hydracast deliberately avoids.
 
 Click a platform chip to mute that source in the feed, double-click it to reconnect.
 
+The chat header carries the layout controls: **Aa** opens a slider for the message text size,
+and the eye button hides the video preview so chat can take the whole width. Drag the divider
+between the preview and the chat column to resize it.
+
+Those three settings are saved into the layout named in the chat header. Type a name into
+**Save current as...** to keep the arrangement you are looking at, then switch between layouts
+from the same menu — one for a wide preview while you set up, another for chat-only while you
+stream. Saved layouts can be renamed and deleted; **Default** cannot, so there is always a
+layout to fall back to.
+
 ---
 
 ## When a destination will not connect

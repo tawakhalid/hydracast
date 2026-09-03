@@ -70,6 +70,26 @@ export interface Platform {
   chat: ChatConfig
 }
 
+/** The part of the UI a layout preset captures. */
+export interface LayoutValues {
+  chatFontSize: number
+  chatWidth: number
+  showPreview: boolean
+}
+
+export interface LayoutPreset extends LayoutValues {
+  id: string
+  name: string
+  /**
+   * The built-in layout. It can be adjusted like any other - the controls must
+   * not appear dead - but it cannot be renamed or deleted, so there is always a
+   * layout to fall back to.
+   */
+  builtIn?: boolean
+}
+
+export const DEFAULT_LAYOUT_ID = 'default'
+
 export interface AppSettings {
   /** Port the local RTMP ingest server listens on - point Streamlabs here. */
   rtmpPort: number
@@ -89,6 +109,17 @@ export interface AppSettings {
   reconnectDelay: number
   /** Keep at most this many chat messages in memory. */
   chatBufferSize: number
+  /**
+   * Message text size in the chat feed, px. Everything else in a message -
+   * author, timestamp, badges, platform icon - is sized relative to it.
+   */
+  chatFontSize: number
+  /** Width of the chat column in the broadcast view, px. Drag the splitter. */
+  chatWidth: number
+  /** Saved layouts the user can switch between. Always contains the built-in. */
+  layouts: LayoutPreset[]
+  /** Which layout the live values above belong to. */
+  activeLayoutId: string
   showPreview: boolean
   theme: 'midnight' | 'nebula' | 'carbon'
 }
@@ -315,6 +346,72 @@ export const DEFAULT_SETTINGS: AppSettings = {
   autoReconnect: true,
   reconnectDelay: 5,
   chatBufferSize: 500,
+  chatFontSize: 13.5,
+  chatWidth: 380,
+  layouts: [
+    {
+      id: DEFAULT_LAYOUT_ID,
+      name: 'Default',
+      builtIn: true,
+      chatFontSize: 13.5,
+      chatWidth: 380,
+      showPreview: true
+    }
+  ],
+  activeLayoutId: DEFAULT_LAYOUT_ID,
   showPreview: true,
   theme: 'midnight'
+}
+
+/**
+ * Picks just the layout-owned values off anything that carries them - the live
+ * settings or a stored preset - so copying in either direction stays total.
+ */
+export function layoutValuesOf(source: LayoutValues): LayoutValues {
+  return {
+    chatFontSize: source.chatFontSize,
+    chatWidth: source.chatWidth,
+    showPreview: source.showPreview
+  }
+}
+
+/**
+ * Makes `name` unique within `layouts`, ignoring `exceptId` so renaming a
+ * layout to its own name is not treated as a collision. Suffixes rather than
+ * rejecting, so saving a layout never fails on a name clash.
+ */
+export function uniqueLayoutName(
+  name: string,
+  layouts: LayoutPreset[],
+  exceptId?: string
+): string {
+  const trimmed = name.trim() || 'Layout'
+  const taken = new Set(
+    layouts.filter((l) => l.id !== exceptId).map((l) => l.name.trim().toLowerCase())
+  )
+  if (!taken.has(trimmed.toLowerCase())) return trimmed
+  for (let n = 2; ; n++) {
+    const candidate = `${trimmed} ${n}`
+    if (!taken.has(candidate.toLowerCase())) return candidate
+  }
+}
+
+/**
+ * Guarantees the built-in layout exists and that the active id points at a real
+ * layout.
+ *
+ * Strictly additive: a user's own layouts are never rewritten, reordered or
+ * dropped. A migration that edits saved values silently destroys a working
+ * setup, and the user has no way to tell it happened.
+ */
+export function ensureLayouts(settings: AppSettings): AppSettings {
+  const builtIn = DEFAULT_SETTINGS.layouts.find((l) => l.id === DEFAULT_LAYOUT_ID)!
+  const layouts = Array.isArray(settings.layouts) ? [...settings.layouts] : []
+  if (!layouts.some((l) => l.id === DEFAULT_LAYOUT_ID)) layouts.unshift({ ...builtIn })
+
+  const activeLayoutId = layouts.some((l) => l.id === settings.activeLayoutId)
+    ? settings.activeLayoutId
+    : DEFAULT_LAYOUT_ID
+
+  return { ...settings, layouts, activeLayoutId }
 }
