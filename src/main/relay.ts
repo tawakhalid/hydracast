@@ -22,6 +22,19 @@ const STDERR_TAIL = 40
 const MAX_START_FAILURES = 3
 /** stderr lines worth surfacing in the activity log while a relay is healthy. */
 const SIGNIFICANT = /error|failed|unable|refused|invalid|denied|timed out|cannot/i
+/**
+ * How long a relay may sit connected-but-silent before it is killed.
+ *
+ * ffmpeg has no usable timeout for this: if an RTMP peer accepts the TCP
+ * connection and then never completes the handshake, ffmpeg blocks forever and
+ * prints nothing at all - no stdout, no stderr, no exit. Verified against
+ * `-rw_timeout`, `-timeout` and `-listen_timeout`, none of which apply to rtmp.
+ * Without this watchdog that state shows as "Connecting" indefinitely with an
+ * empty log, which is the least debuggable failure the app can produce.
+ */
+const CONNECT_TIMEOUT_MS = 20000
+/** Heartbeat interval while a relay is still trying to connect. */
+const CONNECT_TICK_MS = 5000
 
 /** Resolves ffmpeg: explicit setting, then the bundled binary, then PATH. */
 export function resolveFfmpeg(settings: AppSettings): string {
@@ -164,6 +177,8 @@ interface Relay {
   stderrTail: string[]
   /** Set while the user is intentionally stopping, to suppress auto-reconnect. */
   stopping: boolean
+  /** Fires while a relay is connecting but no media has flowed yet. */
+  connectTimer: NodeJS.Timeout | null
   /** True once media actually reached the platform on this attempt. */
   wentLive: boolean
   /** Consecutive failures that never reached `live`. */
@@ -239,6 +254,7 @@ export class RelayManager extends EventEmitter {
           stats: blankStats(p.id),
           startedAt: 0,
           reconnectTimer: null,
+          connectTimer: null,
           stderrTail: [],
           stopping: false,
           wentLive: false,
@@ -349,6 +365,8 @@ export class RelayManager extends EventEmitter {
     relay.stats.bitrateKbps = 0
     relay.stats.droppedFrames = 0
 
+    this.armConnectWatchdog(relay, proc)
+
     proc.stdout.setEncoding('utf-8')
     proc.stdout.on('data', (chunk: string) => this.parseProgress(relay, chunk))
 
@@ -374,6 +392,7 @@ export class RelayManager extends EventEmitter {
 
     proc.on('close', (code) => {
       relay.proc = null
+      this.clearConnectWatchdog(relay)
       relay.stats.bitrateKbps = 0
       relay.stats.fps = 0
       relay.stats.speed = 0
@@ -456,6 +475,66 @@ export class RelayManager extends EventEmitter {
     })
   }
 
+  private clearConnectWatchdog(relay: Relay): void {
+    if (relay.connectTimer) {
+      clearInterval(relay.connectTimer)
+      relay.connectTimer = null
+    }
+  }
+
+  /**
+   * Watches a relay that has started but produced no media yet, so a silent
+   * ffmpeg cannot stall in "Connecting" forever.
+   *
+   * While no encoder is publishing the wait is legitimate - ffmpeg holds the
+   * input open and picks the stream up when Streamlabs connects - so the clock
+   * is reset rather than counted. Only a silent *destination* is killed.
+   */
+  private armConnectWatchdog(relay: Relay, proc: ChildProcessWithoutNullStreams): void {
+    const name = relay.platform.name
+    let waited = 0
+
+    this.clearConnectWatchdog(relay)
+    relay.connectTimer = setInterval(() => {
+      if (relay.proc !== proc || relay.wentLive || relay.stopping) return
+
+      if (!this.sourcePublishing) {
+        if (waited === 0) {
+          this.emit(
+            'log',
+            'info',
+            `${name}: connected, waiting for Streamlabs to publish - this relay will start on its own`
+          )
+          waited = -1
+        }
+        return
+      }
+
+      waited = Math.max(0, waited) + CONNECT_TICK_MS
+      if (waited < CONNECT_TIMEOUT_MS) {
+        this.emit('log', 'info', `${name}: still handshaking with the destination (${waited / 1000}s)`)
+        return
+      }
+
+      const secs = CONNECT_TIMEOUT_MS / 1000
+      this.emit(
+        'log',
+        'error',
+        `${name}: no media accepted within ${secs}s - the destination took the connection but never completed the RTMP handshake`
+      )
+      // ffmpeg printed nothing, so give the failure report something to quote.
+      relay.stderrTail.push(
+        `hydracast: killed after ${secs}s with no data; ffmpeg produced no output at all`
+      )
+      this.clearConnectWatchdog(relay)
+      try {
+        proc.kill('SIGKILL')
+      } catch {
+        /* already gone; the close handler takes it from here */
+      }
+    }, CONNECT_TICK_MS)
+  }
+
   /**
    * Dumps everything known about a failed start: the redacted ffmpeg command,
    * the captured stderr, and a live probe of the destination edge. This is the
@@ -523,6 +602,7 @@ export class RelayManager extends EventEmitter {
           if (relay.stats.status === 'starting' || relay.stats.status === 'reconnecting') {
             relay.wentLive = true
             relay.startFailures = 0
+            this.clearConnectWatchdog(relay)
             this.setStatus(relay, 'live')
             relay.startedAt = Date.now()
             this.emit('log', 'success', `${relay.platform.name}: LIVE`)
@@ -537,6 +617,7 @@ export class RelayManager extends EventEmitter {
     const relay = this.relays.get(platformId)
     if (!relay) return
     relay.stopping = true
+    this.clearConnectWatchdog(relay)
     if (relay.reconnectTimer) {
       clearTimeout(relay.reconnectTimer)
       relay.reconnectTimer = null
@@ -601,6 +682,7 @@ export class RelayManager extends EventEmitter {
     this.latencyTimer = null
     for (const relay of this.relays.values()) {
       if (relay.reconnectTimer) clearTimeout(relay.reconnectTimer)
+      this.clearConnectWatchdog(relay)
       relay.stopping = true
       relay.proc?.kill()
     }
