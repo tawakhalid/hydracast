@@ -196,6 +196,22 @@ select {
   z-index: 1;
 }
 
+/*
+ * The title bar stacks above the workspace.
+ *
+ * It sets `backdrop-filter`, which makes it a stacking context, so the layout
+ * menu that opens downward out of it cannot escape on its own z-index however
+ * high that is - the whole title bar has to outrank `.body`. Both are children
+ * of `.app` and both take `z-index: 1` from the rule above, and `.body` comes
+ * later in the DOM, so it won and the menu opened behind the panels.
+ *
+ * Written as `.app > .titlebar` rather than `.titlebar` on purpose: the rule
+ * above scores 0-2-0 and would otherwise override a plain class selector.
+ */
+.app > .titlebar {
+  z-index: 20;
+}
+
 /* ============================================================
    Title bar
    ============================================================ */
