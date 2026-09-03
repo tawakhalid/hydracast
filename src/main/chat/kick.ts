@@ -18,7 +18,15 @@ const PUSHER_KEY = '32cbd69e4b950bf97679'
 const PUSHER_URL = `wss://ws-us2.pusher.com/app/${PUSHER_KEY}?protocol=7&client=js&version=8.4.0&flash=false`
 const CHANNEL_API = 'https://kick.com/api/v2/channels'
 
-const CHAT_EVENT = 'App\\Events\\ChatMessage'
+/**
+ * Kick has shipped this event under more than one name. Observed live on the
+ * wire as `ChatMessageEvent`; `ChatMessage` appears in older captures and in
+ * most third-party write-ups. Matching both means a rename in either direction
+ * cannot silently empty the feed again - which is exactly how the first cut of
+ * this connector failed: every message arrived and was dropped because the
+ * event name did not match.
+ */
+const CHAT_EVENTS = new Set(['App\\Events\\ChatMessageEvent', 'App\\Events\\ChatMessage'])
 
 /**
  * Issues the lookup through Chromium's network stack rather than Node's.
@@ -226,11 +234,8 @@ export class KickChat extends EventEmitter {
         return
       }
 
-      case CHAT_EVENT:
-        this.emitMessage(frame.data)
-        return
-
       default:
+        if (frame.event && CHAT_EVENTS.has(frame.event)) this.emitMessage(frame.data)
         return
     }
   }
