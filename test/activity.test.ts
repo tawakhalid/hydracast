@@ -137,8 +137,9 @@ ytFeed({ id: 't1', snippet: { type: 'textMessageEvent' }, authorDetails: { displ
 check('plain chat produces no activity', ytEvents.length === 3, `${ytEvents.length}`)
 
 // ---------------------------------------------------------------- Kick ------
-// The mapping is a guess, so what matters most is that nothing is dropped in
-// silence: an unmapped event must announce itself.
+// The payload mapping is pinned against a live capture in kick.test.ts; what
+// this covers is the guarantee that made that capture usable in the first
+// place - an unrecognised event must announce itself rather than vanish.
 const kick = new KickChat(
   platform('kick', { enabled: true, kickChannel: 'chan', kickChatroomId: '1' })
 )
@@ -149,12 +150,21 @@ kick.on('unknown-event', (name: string) => unknown.push(name))
 const kickFeed = (event: string, data: unknown): void =>
   (kick as unknown as Handler).handle(JSON.stringify({ event, data: JSON.stringify(data) }))
 
-kickFeed('App\\Events\\FollowersUpdated', { followersCount: 101 })
-check('a mapped Kick event becomes activity', kickEvents[0]?.kind === 'follow', kickEvents[0]?.kind)
+kickFeed('App\\Events\\SubscriptionEvent', { chatroom_id: 1, username: 'viewer', months: 3 })
+check(
+  'a mapped Kick event becomes activity',
+  kickEvents[0]?.kind === 'subscription',
+  kickEvents[0]?.kind
+)
 
 kickFeed('App\\Events\\SomethingWeHaveNeverSeen', { a: 1 })
 check('an unmapped Kick event is reported, never silently dropped', unknown.length === 1, unknown[0])
 check('an unmapped Kick event produces no activity', kickEvents.length === 1)
+
+// Follows were mapped here on a guess and never once arrived on a live
+// channel, so they must now read as unknown rather than as a silent no-op.
+kickFeed('App\\Events\\FollowersUpdated', { followersCount: 101 })
+check('follows are no longer claimed as supported', unknown.length === 2, unknown.join(', '))
 
 kick.disconnect()
 console.log(failures ? `\n${failures} FAILED` : '\nALL CHECKS PASSED')

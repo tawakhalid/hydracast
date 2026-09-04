@@ -1,7 +1,7 @@
 import { EventEmitter } from 'events'
-import { net } from 'electron'
 import WebSocket from 'ws'
 import type { ActivityEvent, ActivityKind, ChatMessage, Platform } from '@shared/types'
+import { BROWSER_HEADERS, browserFetch } from '../http'
 
 /**
  * Kick chat rides on a public Pusher app - the same credentials the kick.com web
@@ -31,22 +31,57 @@ const CHAT_EVENTS = new Set(['App\\Events\\ChatMessageEvent', 'App\\Events\\Chat
 /**
  * Kick activity events, mapped by the tail of the event name.
  *
- * UNVERIFIED against the wire, unlike the chat event above, which was captured
- * live. Kick documents none of this, so these names are a best guess and some
- * may be wrong or missing. That is survivable only because `handle()` reports
- * every unrecognised event it receives: switch on chat debugging, cause a
- * follow or a sub, and the Activity log names exactly what Kick sent, so the
- * table below can be corrected from evidence rather than guessed at again.
+ * Captured off a live channel rather than guessed: 25 minutes on a subathon
+ * stream, ~13.6k frames. The first cut of this table was written from memory
+ * and got the two money events wrong - both the name and the topic they ride -
+ * so every entry below carries the payload shape that was actually observed.
  */
 const ACTIVITY_KINDS: Record<string, ActivityKind> = {
-  FollowersUpdated: 'follow',
+  /** chatrooms.<id>.v2 - `{ chatroom_id, username, months }` */
   SubscriptionEvent: 'subscription',
-  ChannelSubscriptionEvent: 'subscription',
+  /** chatroom_<id> - `{ gifter_username, gifted_usernames[], gifted_total, gifter_total }` */
   GiftedSubscriptionsEvent: 'gift',
-  LuckyUsersWhoGotGiftSubscriptionsEvent: 'gift',
+  /** channel_<id> - Kick's paid gifts: `{ sender, gift: { name, amount }, message }` */
+  KicksGifted: 'donation',
+  /**
+   * Unverified, unlike the three above: no host happened during the capture.
+   * Kept as a guess because an unmapped host shows up in the Logs tab anyway,
+   * which is how the rest of this table got corrected.
+   */
   StreamHostEvent: 'raid',
   StreamHostedEvent: 'raid'
 }
+
+/**
+ * Events that are real but are not audience activity.
+ *
+ * Listed explicitly rather than left to fall through, because `PredictionUpdated`
+ * alone fired 893 times in 25 minutes: unmapped, it would bury the Logs tab in
+ * "unknown event" noise and hide the one line that matters.
+ *
+ * `FollowersUpdated` is deliberately absent from both tables. It was a guess in
+ * the first version of this file and never arrived once on a live 277k-follower
+ * channel, so follows appear not to be broadcast publicly at all. Leaving it
+ * unmapped means that if Kick ever does send it, the Logs tab says so.
+ */
+const IGNORED_EVENTS = new Set([
+  'PredictionCreated',
+  'PredictionUpdated',
+  'PredictionDeleted',
+  'KicksLeaderboardUpdated',
+  'GiftsLeaderboardUpdated',
+  // The channel-wide twin of SubscriptionEvent. Its topic is not subscribed to,
+  // precisely so that counting it as well cannot double every sub.
+  'ChannelSubscriptionEvent',
+  // The "X subscribed" line Kick writes into chat; SubscriptionEvent covers it.
+  'ChatMessageSentEvent',
+  'MessageDeletedEvent',
+  'PinnedMessageCreatedEvent',
+  'PinnedMessageDeletedEvent',
+  'UserBannedEvent',
+  'UserUnbannedEvent',
+  'ChatroomUpdatedEvent'
+])
 
 /** Strips the `App\Events\` prefix Kick puts on every event name. */
 function eventTail(name: string): string {
@@ -54,17 +89,82 @@ function eventTail(name: string): string {
   return idx >= 0 ? name.slice(idx + 1) : name
 }
 
+type ActivityFields = Pick<
+  ActivityEvent,
+  'actor' | 'detail' | 'amount' | 'amountLabel' | 'message'
+>
+
+const str = (v: unknown): string => (typeof v === 'string' ? v : '')
+const num = (v: unknown): number | undefined => (typeof v === 'number' ? v : undefined)
+const rec = (v: unknown): Record<string, unknown> =>
+  v && typeof v === 'object' ? (v as Record<string, unknown>) : {}
+
+/** Lists gift recipients, keeping a large bomb to one readable line. */
+function summarise(names: string[], cap = 8): string {
+  if (names.length <= cap) return names.join(', ')
+  return `${names.slice(0, cap).join(', ')} and ${names.length - cap} more`
+}
+
 /**
- * Issues the lookup through Chromium's network stack rather than Node's.
+ * Turns one Kick payload into the fields an activity row shows.
  *
- * Kick fronts its API with Cloudflare, which rejects Node's HTTP client outright
- * (`403 Request blocked by security policy`) because its TLS and header
- * signature is not a browser's. Electron already embeds a real browser, so
- * asking it to make the request is both simpler and more honest than dressing
- * Node up as one. Falls back to global fetch outside the Electron main process.
+ * Written out per event rather than as one generic field hunt: Kick names the
+ * actor `username`, `gifter_username` and `sender.username` across the three
+ * events, and a generic search for "the username" silently produced "Someone"
+ * for the two that matter most.
  */
-function browserFetch(url: string, init: RequestInit): Promise<Response> {
-  return typeof net?.fetch === 'function' ? net.fetch(url, init) : fetch(url, init)
+function describe(tail: string, body: Record<string, unknown>): ActivityFields {
+  if (tail === 'SubscriptionEvent') {
+    const months = num(body['months'])
+    return {
+      actor: str(body['username']) || 'Someone',
+      detail: months && months > 1 ? `resubscribed for ${months} months` : 'subscribed',
+      amount: months,
+      amountLabel: months && months > 1 ? `${months} mo` : undefined
+    }
+  }
+
+  if (tail === 'GiftedSubscriptionsEvent') {
+    const names = Array.isArray(body['gifted_usernames'])
+      ? (body['gifted_usernames'] as unknown[]).map(str).filter(Boolean)
+      : []
+    const total = num(body['gifted_total']) ?? names.length
+    const lifetime = num(body['gifter_total'])
+    return {
+      actor: str(body['gifter_username']) || 'Someone',
+      detail:
+        `gifted ${total} subscription${total === 1 ? '' : 's'}` +
+        (lifetime ? ` (${lifetime.toLocaleString('en-US')} all time)` : ''),
+      amount: total,
+      amountLabel: `${total}x`,
+      // Naming the recipients is most of the point of a gift alert, but a
+      // 50-sub bomb - observed live - would otherwise render as a wall of
+      // usernames, so the tail is summarised.
+      message: names.length ? summarise(names) : undefined
+    }
+  }
+
+  if (tail === 'KicksGifted') {
+    const gift = rec(body['gift'])
+    const amount = num(gift['amount'])
+    const note = str(body['message'])
+    return {
+      actor: str(rec(body['sender'])['username']) || 'Someone',
+      detail: `sent ${str(gift['name']) || 'a gift'}`,
+      amount,
+      amountLabel: amount ? `${amount.toLocaleString('en-US')} Kicks` : undefined,
+      message: note || undefined
+    }
+  }
+
+  // A host. Unverified shape, so read the viewer count from either spelling.
+  const viewers = num(body['number_viewers']) ?? num(body['numberViewers'])
+  return {
+    actor: str(body['username']) || str(rec(body['user'])['username']) || 'Someone',
+    detail: 'hosted the stream',
+    amount: viewers,
+    amountLabel: viewers ? `${viewers} viewers` : undefined
+  }
 }
 
 /** Kick inlines emotes as `[emote:12345:name]`; render the name instead. */
@@ -96,6 +196,9 @@ export class KickChat extends EventEmitter {
   private platform: Platform
   private slug: string
   private chatroomId: string
+  /** Only known when the slug lookup succeeds; Kicks ride on it. */
+  private channelId = ''
+  private subscribed = 0
   private reconnectTimer: NodeJS.Timeout | null = null
   private pingTimer: NodeJS.Timeout | null = null
   private closedByUs = false
@@ -120,11 +223,13 @@ export class KickChat extends EventEmitter {
     this.closedByUs = false
     this.emit('status', 'connecting')
 
-    if (!this.chatroomId) {
-      const resolved = await this.resolveChatroomId(this.slug)
+    // Worth attempting even when the chatroom id was typed in by hand, because
+    // only the lookup can supply the channel id that Kicks ride on. It is fatal
+    // only when there is no manual id to fall back on.
+    if (this.slug) {
+      const ok = await this.resolveChannel(this.slug, !this.chatroomId)
       if (this.closedByUs) return
-      if (!resolved) return
-      this.chatroomId = resolved
+      if (!ok && !this.chatroomId) return
     }
 
     this.open()
@@ -135,56 +240,66 @@ export class KickChat extends EventEmitter {
    * keyed on. Kick fronts this endpoint with Cloudflare, so a request that looks
    * automated can come back as an HTML challenge instead of JSON.
    */
-  private async resolveChatroomId(slug: string): Promise<string | null> {
+  private async resolveChannel(slug: string, fatal: boolean): Promise<boolean> {
+    // A non-fatal failure stays quiet: the connection still works from the
+    // manually entered chatroom id, only Kicks are missing.
+    const fail = (msg: string): boolean => {
+      if (fatal) this.emit('status', 'error', msg)
+      return false
+    }
+
     try {
       const res = await browserFetch(`${CHANNEL_API}/${encodeURIComponent(slug)}`, {
         // No user-agent override: Chromium sends its own, which matches the TLS
         // fingerprint it presents. A hand-written UA only contradicts it.
-        headers: { accept: 'application/json', 'accept-language': 'en-US,en;q=0.9' }
+        headers: BROWSER_HEADERS
       })
 
-      if (res.status === 404) {
-        this.emit('status', 'error', `Kick channel "${slug}" not found`)
-        return null
-      }
+      if (res.status === 404) return fail(`Kick channel "${slug}" not found`)
       if (!res.ok) {
-        this.emit(
-          'status',
-          'error',
+        return fail(
           res.status === 403
-            ? 'Kick blocked the channel lookup (403). Set the chatroom id in Settings > Chat sources to connect anyway.'
+            ? 'Kick blocked the channel lookup (403). Set the chatroom id in Settings > Chat & viewers to connect anyway.'
             : `Kick channel lookup failed (HTTP ${res.status})`
         )
-        return null
       }
 
       const body = await res.text()
-      let data: { chatroom?: { id?: number } }
+      let data: { id?: number; chatroom?: { id?: number } }
       try {
         data = JSON.parse(body)
       } catch {
         // The Cloudflare interstitial is HTML, not JSON.
-        this.emit(
-          'status',
-          'error',
-          'Kick returned a Cloudflare challenge - enter the chatroom id manually'
-        )
-        return null
+        return fail('Kick returned a Cloudflare challenge - enter the chatroom id manually')
       }
 
+      if (data.id) this.channelId = String(data.id)
       const id = data.chatroom?.id
-      if (!id) {
-        this.emit('status', 'error', `Kick channel "${slug}" has no chatroom`)
-        return null
-      }
-      return String(id)
+      if (!id) return fail(`Kick channel "${slug}" has no chatroom`)
+      // A hand-entered id stays authoritative; it only exists because the
+      // lookup was failing in the first place.
+      if (!this.chatroomId) this.chatroomId = String(id)
+      return true
     } catch (err) {
-      this.emit('status', 'error', `Kick lookup failed: ${(err as Error).message}`)
-      return null
+      return fail(`Kick lookup failed: ${(err as Error).message}`)
     }
   }
 
+  /**
+   * The Pusher topics one Kick channel spreads its events across.
+   *
+   * Not one feed but three, with inconsistent naming that is not a typo:
+   * chat and subs arrive on the dotted plural, gifted subs on the underscored
+   * singular, and Kicks on the channel rather than the chatroom.
+   */
+  private topics(): string[] {
+    const list = [`chatrooms.${this.chatroomId}.v2`, `chatroom_${this.chatroomId}`]
+    if (this.channelId) list.push(`channel_${this.channelId}`)
+    return list
+  }
+
   private open(): void {
+    this.subscribed = 0
     const ws = new WebSocket(PUSHER_URL)
     this.ws = ws
 
@@ -233,21 +348,23 @@ export class KickChat extends EventEmitter {
 
     switch (frame.event) {
       case 'pusher:connection_established':
-        this.send({
-          event: 'pusher:subscribe',
-          data: { auth: '', channel: `chatrooms.${this.chatroomId}.v2` }
-        })
+        for (const channel of this.topics()) {
+          this.send({ event: 'pusher:subscribe', data: { auth: '', channel } })
+        }
         // Pusher drops idle sockets after roughly two minutes.
         this.clearPing()
         this.pingTimer = setInterval(() => this.send({ event: 'pusher:ping', data: {} }), 60000)
         return
 
       case 'pusher_internal:subscription_succeeded':
-        this.emit(
-          'status',
-          'connected',
-          this.slug ? `kick.com/${this.slug}` : `chatroom ${this.chatroomId}`
-        )
+        // One frame per topic; the feed counts as live on the first.
+        if (this.subscribed++ === 0) {
+          this.emit(
+            'status',
+            'connected',
+            this.slug ? `kick.com/${this.slug}` : `chatroom ${this.chatroomId}`
+          )
+        }
         return
 
       case 'pusher:ping':
@@ -262,6 +379,9 @@ export class KickChat extends EventEmitter {
 
       default:
         if (!frame.event) return
+        // Protocol chatter, including the pong that answers our own keepalive.
+        // Reporting these as unknown events was pure noise in the Logs tab.
+        if (frame.event.startsWith('pusher:') || frame.event.startsWith('pusher_internal:')) return
         if (CHAT_EVENTS.has(frame.event)) {
           this.emitMessage(frame.data)
           return
@@ -276,47 +396,24 @@ export class KickChat extends EventEmitter {
   }
 
   /**
-   * Maps a non-chat Kick event onto an activity event. Returns false when the
-   * event is not one we know, so the caller can report it.
+   * Maps a non-chat Kick event onto an activity event. Returns false only for
+   * an event that is neither known activity nor known noise, so the caller can
+   * report it and this file can be corrected from evidence.
    */
   private emitActivity(event: string, payload: unknown): boolean {
-    const kind = ACTIVITY_KINDS[eventTail(event)]
+    const tail = eventTail(event)
+    if (IGNORED_EVENTS.has(tail)) return true
+
+    const kind = ACTIVITY_KINDS[tail]
     if (!kind) return false
 
     let body: Record<string, unknown> = {}
     try {
-      body = (typeof payload === 'string' ? JSON.parse(payload) : payload) ?? {}
+      const parsed = typeof payload === 'string' ? JSON.parse(payload) : payload
+      if (parsed && typeof parsed === 'object') body = parsed as Record<string, unknown>
     } catch {
       /* keep the empty body; the event itself is still worth showing */
     }
-
-    const asRecord = (v: unknown): Record<string, unknown> =>
-      v && typeof v === 'object' ? (v as Record<string, unknown>) : {}
-
-    // Kick is inconsistent about where the username sits, so try the shapes
-    // seen in the wild before falling back to something printable.
-    const actor =
-      (body['username'] as string) ||
-      (asRecord(body['user'])['username'] as string) ||
-      (asRecord(body['sender'])['username'] as string) ||
-      (body['followersCount'] !== undefined ? 'Someone' : 'Someone')
-
-    const count =
-      (body['followersCount'] as number) ??
-      (body['months'] as number) ??
-      (body['number_viewers'] as number) ??
-      (Array.isArray(body['gifted_usernames'])
-        ? (body['gifted_usernames'] as unknown[]).length
-        : undefined)
-
-    const detail =
-      kind === 'follow'
-        ? 'followed'
-        : kind === 'raid'
-          ? `hosted the stream${count ? ` with ${count} viewers` : ''}`
-          : kind === 'gift'
-            ? `gifted ${count ?? ''} subscription${count === 1 ? '' : 's'}`.replace('  ', ' ')
-            : `subscribed${count ? ` for ${count} months` : ''}`
 
     this.emit('activity', {
       id: `${Date.now()}-${Math.random().toString(36).slice(2)}`,
@@ -324,10 +421,7 @@ export class KickChat extends EventEmitter {
       platformKind: 'kick',
       timestamp: Date.now(),
       kind,
-      actor,
-      detail,
-      amount: typeof count === 'number' ? count : undefined,
-      amountLabel: typeof count === 'number' ? String(count) : undefined
+      ...describe(tail, body)
     } satisfies ActivityEvent)
     return true
   }
