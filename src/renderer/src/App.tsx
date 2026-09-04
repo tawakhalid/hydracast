@@ -22,6 +22,7 @@ import {
   placePanel,
   panelsIn,
   PANEL_TITLES,
+  totalViewers,
   uniqueLayoutName,
   withPanel
 } from '@shared/types'
@@ -34,6 +35,7 @@ import {
   CheckIcon,
   CloseIcon,
   CopyIcon,
+  EyeIcon,
   LogsIcon,
   MaximizeIcon,
   MinimizeIcon,
@@ -71,6 +73,7 @@ const emptySnapshot: Snapshot = {
   },
   relays: {},
   chatStatus: {},
+  viewers: {},
   broadcasting: false,
   sessionStartedAt: null
 }
@@ -372,6 +375,8 @@ export default function App() {
         .reduce((sum, r) => sum + r.bitrateKbps, 0),
     [snapshot.relays]
   )
+  // Summed across the live destinations that report one; -1 while none does.
+  const viewerTotal = useMemo(() => totalViewers(snapshot.viewers), [snapshot.viewers])
   const avgLatency = useMemo(() => {
     const values = Object.values(snapshot.relays)
       .map((r) => r.latencyMs)
@@ -436,6 +441,7 @@ export default function App() {
                 key={p.id}
                 platform={p}
                 stats={snapshot.relays[p.id]}
+                viewers={snapshot.viewers[p.id]}
                 encoders={encoders}
                 onPatch={(patch) => void patchPlatform(p.id, patch)}
                 onStart={() => void window.hydracast.startRelay(p.id)}
@@ -673,6 +679,21 @@ export default function App() {
               <div className="stat">
                 <span className="k">Avg latency</span>
                 <span className="v">{avgLatency >= 0 ? `${avgLatency}ms` : '--'}</span>
+              </div>
+              <div
+                className="stat"
+                title={
+                  viewerTotal >= 0
+                    ? 'Concurrent viewers, summed across the destinations reporting one'
+                    : 'No live destination is reporting a viewer count'
+                }
+              >
+                <span className="k">
+                  <EyeIcon size={11} /> Viewers
+                </span>
+                <span className="v">
+                  {viewerTotal >= 0 ? viewerTotal.toLocaleString() : '--'}
+                </span>
               </div>
               <div className="stat">
                 <span className="k">Live</span>

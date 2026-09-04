@@ -6,6 +6,7 @@ test/.pipeline.cjs
 test/.kick.cjs
 test/.layout.cjs
 test/.activity.cjs
+test/.viewers.cjs
 *.tsbuildinfo
 *.log
 .env

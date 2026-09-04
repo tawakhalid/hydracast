@@ -1,10 +1,11 @@
 import { useState } from 'react'
 import { AnimatePresence, motion } from 'framer-motion'
-import type { EncodeMode, EncoderKind, Platform, RelayStats } from '@shared/types'
-import { PLATFORM_PRESETS } from '@shared/types'
+import type { EncodeMode, EncoderKind, Platform, RelayStats, ViewerCount } from '@shared/types'
+import { PLATFORM_PRESETS, supportsViewerCount } from '@shared/types'
 import {
   AlertIcon,
   ChevronIcon,
+  EyeIcon,
   PlatformIcon,
   PLATFORM_COLORS,
   PlayIcon,
@@ -16,6 +17,8 @@ import Sparkline from './Sparkline'
 interface Props {
   platform: Platform
   stats?: RelayStats
+  /** Present only while this destination is live. */
+  viewers?: ViewerCount
   encoders: string[]
   onPatch: (patch: Partial<Platform>) => void
   onStart: () => void
@@ -40,6 +43,21 @@ function hostOf(url: string): string {
   }
 }
 
+/**
+ * Why the count reads "--", so hovering the pill explains it. Falls back to the
+ * platform's own reason when there is one - "Twitch needs an app client id",
+ * "the broadcast has ended" - because a bare dash is the same as saying nothing.
+ */
+function viewerTitle(platform: Platform, viewers?: ViewerCount): string {
+  if (viewers?.detail) return viewers.detail
+  if (!supportsViewerCount(platform.kind)) {
+    return `${platform.name} does not publish a viewer count`
+  }
+  if (!viewers || viewers.updatedAt === 0) return 'Waiting for the first viewer count'
+  const at = new Date(viewers.updatedAt).toLocaleTimeString('en-GB')
+  return `Concurrent viewers on ${platform.name}, as of ${at}`
+}
+
 function latencyClass(ms: number): string {
   if (ms < 0) return ''
   if (ms < 60) return 'good'
@@ -50,6 +68,7 @@ function latencyClass(ms: number): string {
 export default function PlatformCard({
   platform,
   stats,
+  viewers,
   encoders,
   onPatch,
   onStart,
@@ -68,6 +87,8 @@ export default function PlatformCard({
   const isBusy = status === 'starting' || status === 'reconnecting' || status === 'stopping'
   const recommended =
     PLATFORM_PRESETS.find((p) => p.kind === platform.kind)?.recommendedBitrate ?? 6000
+
+  const hasViewers = (viewers?.count ?? -1) >= 0
 
   const health = stats?.health ?? 0
   const healthClass = health >= 75 ? '' : health >= 45 ? 'warn' : 'bad'
@@ -109,6 +130,24 @@ export default function PlatformCard({
           </div>
           <div className="pcard-sub">{hostOf(platform.url)}</div>
         </div>
+
+        {/* Only while live: an idle destination has no audience to report. */}
+        <AnimatePresence initial={false}>
+          {isLive && (
+            <motion.div
+              className={`viewer-pill ${hasViewers ? '' : 'unknown'}`}
+              title={viewerTitle(platform, viewers)}
+              initial={{ opacity: 0, scale: 0.85 }}
+              animate={{ opacity: 1, scale: 1 }}
+              exit={{ opacity: 0, scale: 0.85 }}
+              transition={{ type: 'spring', stiffness: 420, damping: 30 }}
+            >
+              <EyeIcon size={12} />
+              <span>{hasViewers ? viewers!.count.toLocaleString() : '--'}</span>
+            </motion.div>
+          )}
+        </AnimatePresence>
+
         <button
           className={`toggle ${platform.enabled ? 'on' : ''}`}
           onClick={() => onPatch({ enabled: !platform.enabled })}

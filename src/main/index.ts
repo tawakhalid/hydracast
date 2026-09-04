@@ -23,11 +23,13 @@ import { IngestServer } from './ingest'
 import { checkDestination } from './diagnose'
 import { detectEncoders, RelayManager, resolveFfmpeg } from './relay'
 import { ChatManager } from './chat/manager'
+import { ViewerCounter } from './viewers'
 
 let mainWindow: BrowserWindow | null = null
 let ingest: IngestServer
 let relays: RelayManager
 let chat: ChatManager
+let viewers: ViewerCounter
 let tickTimer: NodeJS.Timeout | null = null
 let sessionStartedAt: number | null = null
 const logs: LogEntry[] = []
@@ -46,10 +48,17 @@ function log(level: LogEntry['level'], scope: string, message: string): void {
 }
 
 function snapshot(): Snapshot {
+  const stats = relays.getStats()
+  // Viewer counts follow the relays: a destination that is not live has no
+  // audience to report, and polling one would only spend API quota.
+  viewers.setLive(
+    new Set(Object.keys(stats).filter((id) => stats[id].status === 'live'))
+  )
   return {
     ingest: ingest.getState(),
-    relays: relays.getStats(),
+    relays: stats,
     chatStatus: chat.getStatus(),
+    viewers: viewers.getCounts(),
     broadcasting: relays.isAnyLive(),
     sessionStartedAt
   }
@@ -103,6 +112,7 @@ async function bootServices(): Promise<void> {
   ingest = new IngestServer(config.settings)
   relays = new RelayManager(config.settings)
   chat = new ChatManager(config.settings.chatBufferSize)
+  viewers = new ViewerCounter()
 
   ingest.on('log', (level: LogEntry['level'], message: string) => log(level, 'ingest', message))
   ingest.on('publish-start', () => {
@@ -130,7 +140,12 @@ async function bootServices(): Promise<void> {
   )
   chat.on('status', () => send('snapshot', snapshot()))
 
+  viewers.on('log', (level: LogEntry['level'], message: string) =>
+    log(level, 'viewers', message)
+  )
+
   relays.syncPlatforms(config.platforms)
+  viewers.syncPlatforms(config.platforms)
   relays.setSource(ingest.localSourceUrl, 0)
 
   try {
@@ -179,6 +194,7 @@ function registerIpc(): void {
     const saved = saveConfig(next)
     relays.setSettings(saved.settings)
     relays.syncPlatforms(saved.platforms)
+    viewers.syncPlatforms(saved.platforms)
     chat.setBufferSize(saved.settings.chatBufferSize)
     chat.sync(saved.platforms)
 
@@ -204,6 +220,7 @@ function registerIpc(): void {
     const before = getConfig().platforms.find((p) => p.id === id)
     const saved = updatePlatform(id, patch)
     relays.syncPlatforms(saved.platforms)
+    viewers.syncPlatforms(saved.platforms)
     const platform = saved.platforms.find((p) => p.id === id)
     // Only rebuild the chat connector when its identity actually changed -
     // toggling a destination or nudging its bitrate must not drop chat.
@@ -218,6 +235,7 @@ function registerIpc(): void {
   ipcMain.handle('platform:add', (_e, kind: PlatformKind) => {
     const saved = addPlatform(kind)
     relays.syncPlatforms(saved.platforms)
+    viewers.syncPlatforms(saved.platforms)
     return saved
   })
 
@@ -226,6 +244,7 @@ function registerIpc(): void {
     chat.disconnect(id)
     const saved = removePlatform(id)
     relays.syncPlatforms(saved.platforms)
+    viewers.syncPlatforms(saved.platforms)
     return saved
   })
 
@@ -326,6 +345,7 @@ app.on('window-all-closed', () => {
 app.on('before-quit', async () => {
   if (tickTimer) clearInterval(tickTimer)
   chat?.dispose()
+  viewers?.dispose()
   relays?.dispose()
   await ingest?.stop()
 })

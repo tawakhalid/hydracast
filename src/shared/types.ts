@@ -55,6 +55,22 @@ export interface ChatConfig {
   kickChatroomId?: string
 }
 
+/**
+ * Credentials the viewer count needs on platforms that will not hand one out
+ * anonymously. Kept off `ChatConfig` because chat reads nothing from here: the
+ * channel identity is shared, the credentials are not.
+ */
+export interface ViewerConfig {
+  /**
+   * Twitch application client id. Helix requires an app token even for the
+   * entirely public `/streams` endpoint, so a viewer count is the one thing
+   * Hydracast cannot read from Twitch without the user registering an app.
+   * Client-credentials only - it grants no access to the user's own account.
+   */
+  twitchClientId?: string
+  twitchClientSecret?: string
+}
+
 export interface Platform {
   id: string
   kind: PlatformKind
@@ -68,6 +84,8 @@ export interface Platform {
   enabled: boolean
   video: PlatformVideoSettings
   chat: ChatConfig
+  /** Optional: only the platforms in `VIEWER_CAPABLE` read anything from it. */
+  viewers?: ViewerConfig
 }
 
 /** A movable panel in the broadcast workspace. */
@@ -285,6 +303,48 @@ export function supportsChat(kind: PlatformKind): boolean {
   return CHAT_CAPABLE.includes(kind)
 }
 
+/**
+ * Concurrent audience on one destination, sampled only while that destination
+ * is live. Absent from the snapshot entirely when it is not.
+ */
+export interface ViewerCount {
+  platformId: string
+  /** Concurrent viewers, or -1 when no count is available. */
+  count: number
+  /** Epoch ms of the last successful sample; 0 when there has never been one. */
+  updatedAt: number
+  /**
+   * Why the count is missing or stale - "No Twitch app credentials set", the
+   * API's own error. Shown as the tooltip on the number.
+   */
+  detail?: string
+}
+
+/**
+ * Platforms that publish a concurrent viewer count Hydracast can read.
+ *
+ * The rest are not an oversight: Facebook, Trovo and TikTok all put live
+ * viewer counts behind an account-scoped OAuth token, and a custom RTMP
+ * destination is by definition unknown. Those show "--" rather than a guess.
+ */
+export const VIEWER_CAPABLE: PlatformKind[] = ['twitch', 'youtube', 'kick']
+
+export function supportsViewerCount(kind: PlatformKind): boolean {
+  return VIEWER_CAPABLE.includes(kind)
+}
+
+/**
+ * Audience across every destination that is reporting one, or -1 when none is.
+ *
+ * A plain sum, deliberately: the same person watching on two platforms is
+ * counted twice, because there is no way to know that and pretending otherwise
+ * would understate the number every platform's own dashboard shows.
+ */
+export function totalViewers(counts: Record<string, ViewerCount>): number {
+  const known = Object.values(counts).filter((c) => c.count >= 0)
+  return known.length ? known.reduce((sum, c) => sum + c.count, 0) : -1
+}
+
 export type CheckLevel = 'ok' | 'warn' | 'error'
 
 /** One line of a destination diagnostic report. */
@@ -308,6 +368,8 @@ export interface Snapshot {
   ingest: IngestState
   relays: Record<string, RelayStats>
   chatStatus: Record<string, ChatStatus>
+  /** Keyed by platform id; only live destinations appear. */
+  viewers: Record<string, ViewerCount>
   broadcasting: boolean
   sessionStartedAt: number | null
 }

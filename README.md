@@ -9,8 +9,8 @@
 One stream in from Streamlabs or OBS, many streams out. Hydracast takes a single local feed and
 fans it out to Twitch, YouTube, Kick, Facebook, Trovo, TikTok or any custom RTMP endpoint - each
 destination with its own stream key, its own video bitrate, and its own on/off switch. Live
-latency and health per platform, a local preview, and every platform's chat merged into one
-timestamped feed.
+latency, health and viewer count per platform, a local preview, and every platform's chat merged
+into one timestamped feed.
 
 ```
 Streamlabs / OBS ─▶ rtmp://localhost:1935/live ─▶ Hydracast ─┬─▶ Twitch    (passthrough)
@@ -105,13 +105,36 @@ and the timestamp the platform itself assigned to the message.
 - **Kick** — read-only over Kick's public Pusher socket; enter the channel name, no login. The
   chatroom id is looked up automatically, but that lookup sits behind Cloudflare. If the feed
   reports a challenge, open `kick.com/api/v2/channels/<your-channel>` in a browser and paste the
-  `chatroom.id` into the Chat tab. Kick does not document this endpoint, so it can change without
+  `chatroom.id` into the Chat & viewers tab. Kick does not document this endpoint, so it can change without
   notice — the connector reports exactly what broke rather than showing an empty feed.
 
 Facebook, Trovo and TikTok are relay-only: their chat needs an OAuth app registration, which
 Hydracast deliberately avoids.
 
 Click a platform chip to mute that source in the feed, double-click it to reconnect.
+
+---
+
+## Viewer counts
+
+While a destination is live, its card shows the platform's own concurrent viewer count next to
+the name, and the header sums every destination that is reporting one. The count disappears the
+moment that destination stops - an idle relay has no audience to report, and polling one would
+only spend API quota for nothing.
+
+- **Twitch** — the one number Twitch will not hand out anonymously. Register an application at
+  `dev.twitch.tv/console/apps` and paste its client id and secret into the Chat & viewers tab.
+  Those are client-credentials: they authenticate the app, not your account, and read nothing
+  beyond the public viewer count. Leave them blank and the card simply shows `--`.
+- **YouTube** — read from the same Data API key as chat, sampled once a minute. A broadcaster who
+  has hidden the count on the watch page hides it here too.
+- **Kick** — read from the same undocumented channel endpoint that resolves the chatroom id, so
+  it carries the same Cloudflare caveat.
+
+Facebook, Trovo, TikTok and custom RTMP destinations put their live counts behind an
+account-scoped OAuth token, so they show `--` rather than a guess. Hovering any `--` says why.
+The total is a plain sum: someone watching on two platforms is counted twice, exactly as each
+platform's own dashboard counts them.
 
 The chat header carries the layout controls: **Aa** opens a slider for the message text size,
 and the eye button hides the video preview so chat can take the whole width. Drag the divider
@@ -194,6 +217,8 @@ src/
     latency.ts     TCP round-trip probe
     config.ts      persisted settings (userData/hydracast.config.json)
     diagnose.ts    destination config + DNS/TCP/TLS checks
+    viewers.ts     per-platform concurrent viewer counts while live
+    http.ts        requests issued through Chromium's network stack
     chat/          Twitch IRC, YouTube live chat and Kick Pusher connectors
   preload/       context-isolated IPC bridge
   renderer/      React UI

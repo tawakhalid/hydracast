@@ -25,7 +25,8 @@ function makePlatform(kind: PlatformKind, enabled = false): Platform {
     streamKey: '',
     enabled,
     video: { ...DEFAULT_VIDEO, videoBitrate: preset.recommendedBitrate },
-    chat: { enabled: true }
+    chat: { enabled: true },
+    viewers: {}
   }
 }
 
@@ -51,7 +52,8 @@ function migrate(raw: Partial<AppConfig>): AppConfig {
     ...p,
     id: p.id || randomUUID(),
     video: { ...DEFAULT_VIDEO, ...(p.video ?? {}) },
-    chat: { ...(p.chat ?? {}), enabled: p.chat?.enabled ?? true }
+    chat: { ...(p.chat ?? {}), enabled: p.chat?.enabled ?? true },
+    viewers: { ...(p.viewers ?? {}) }
   }))
   return { settings, platforms }
 }

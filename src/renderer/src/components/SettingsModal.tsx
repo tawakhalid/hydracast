@@ -110,6 +110,14 @@ export default function SettingsModal({
       platforms: d.platforms.map((p) => (p.id === id ? { ...p, chat: { ...p.chat, ...patch } } : p))
     }))
 
+  const patchViewers = (id: string, patch: Partial<NonNullable<Platform['viewers']>>): void =>
+    setDraft((d) => ({
+      ...d,
+      platforms: d.platforms.map((p) =>
+        p.id === id ? { ...p, viewers: { ...(p.viewers ?? {}), ...patch } } : p
+      )
+    }))
+
   const patchSettings = (patch: Partial<AppSettings>): void =>
     setDraft((d) => ({ ...d, settings: { ...d.settings, ...patch } }))
 
@@ -162,7 +170,7 @@ export default function SettingsModal({
           {(
             [
               ['destinations', 'Destinations'],
-              ['chat', 'Chat sources'],
+              ['chat', 'Chat & viewers'],
               ['app', 'Application']
             ] as [Tab, string][]
           ).map(([id, label]) => (
@@ -563,8 +571,8 @@ export default function SettingsModal({
             <>
               {chatPlatforms.length === 0 && (
                 <div className="hint">
-                  Chat reading is available for Twitch, YouTube and Kick destinations. Add one on
-                  the Destinations tab.
+                  Chat and viewer counts are available for Twitch, YouTube and Kick destinations.
+                  Add one on the Destinations tab.
                 </div>
               )}
               {chatPlatforms.map((p) => (
@@ -586,18 +594,53 @@ export default function SettingsModal({
                   </div>
 
                   {p.kind === 'twitch' && (
-                    <div className="field" style={{ marginBottom: 0 }}>
-                      <label>Twitch channel</label>
-                      <input
-                        className="input mono"
-                        placeholder="your_channel_name"
-                        value={p.chat.twitchChannel ?? ''}
-                        onChange={(e) => patchChat(p.id, { twitchChannel: e.target.value })}
-                      />
-                      <div className="hint" style={{ marginTop: 6 }}>
-                        Read-only anonymous connection &mdash; no login or token required.
+                    <>
+                      <div className="field">
+                        <label>Twitch channel</label>
+                        <input
+                          className="input mono"
+                          placeholder="your_channel_name"
+                          value={p.chat.twitchChannel ?? ''}
+                          onChange={(e) => patchChat(p.id, { twitchChannel: e.target.value })}
+                        />
+                        <div className="hint" style={{ marginTop: 6 }}>
+                          Chat is a read-only anonymous connection &mdash; no login or token
+                          required.
+                        </div>
                       </div>
-                    </div>
+
+                      <div className="section-label">Viewer count (optional)</div>
+                      <div className="row c2">
+                        <div className="field" style={{ marginBottom: 0 }}>
+                          <label>App client id</label>
+                          <input
+                            className="input mono"
+                            placeholder="from dev.twitch.tv"
+                            value={p.viewers?.twitchClientId ?? ''}
+                            onChange={(e) => patchViewers(p.id, { twitchClientId: e.target.value })}
+                          />
+                        </div>
+                        <div className="field" style={{ marginBottom: 0 }}>
+                          <label>App client secret</label>
+                          <input
+                            className="input mono"
+                            type="password"
+                            placeholder="from dev.twitch.tv"
+                            value={p.viewers?.twitchClientSecret ?? ''}
+                            onChange={(e) =>
+                              patchViewers(p.id, { twitchClientSecret: e.target.value })
+                            }
+                          />
+                        </div>
+                      </div>
+                      <div className="hint" style={{ marginTop: 8 }}>
+                        The only thing Twitch will not hand out anonymously. Register an
+                        application at{' '}
+                        <span className="mono">dev.twitch.tv/console/apps</span> and paste its
+                        credentials here &mdash; they authenticate the app, not your account, and
+                        read nothing beyond the public viewer count. Leave blank to skip the count.
+                      </div>
+                    </>
                   )}
 
                   {p.kind === 'kick' && (
@@ -621,7 +664,8 @@ export default function SettingsModal({
                         />
                       </div>
                       <div className="hint" style={{ marginTop: 8 }}>
-                        Read-only, no login required. Kick puts the channel lookup behind
+                        Read-only, no login required; the channel name also feeds the viewer count.
+                        Kick puts the channel lookup behind
                         Cloudflare, so if the feed reports a challenge, open{' '}
                         <span className="mono">kick.com/api/v2/channels/your_channel</span> in a
                         browser and paste the <span className="mono">chatroom.id</span> above.
@@ -663,7 +707,8 @@ export default function SettingsModal({
                       </div>
                       <div className="hint" style={{ marginTop: 8 }}>
                         Create a key in Google Cloud Console with the YouTube Data API v3 enabled.
-                        Polling respects the interval the API returns to protect your quota.
+                        Chat polling respects the interval the API returns, and the viewer count is
+                        sampled once a minute, to protect your quota.
                       </div>
                     </>
                   )}
