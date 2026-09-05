@@ -47,6 +47,22 @@ export class ChatManager extends EventEmitter {
     this.activity = []
   }
 
+  /**
+   * Records an activity event that did not come from a chat connector.
+   *
+   * Twitch follows arrive over EventSub rather than IRC, but the renderer reads
+   * one merged feed and one history. Routing them through here keeps follows in
+   * the same buffer and under the same cap as everything else, instead of
+   * giving them a second path that history would silently forget.
+   */
+  addActivity(event: ActivityEvent): void {
+    this.activity.push(event)
+    if (this.activity.length > this.bufferSize) {
+      this.activity.splice(0, this.activity.length - this.bufferSize)
+    }
+    this.emit('activity', event)
+  }
+
   /** Twitch, YouTube and Kick all have a read path that needs no OAuth login. */
   private supports(platform: Platform): boolean {
     return supportsChat(platform.kind)
@@ -80,13 +96,7 @@ export class ChatManager extends EventEmitter {
       this.emit('message', message)
     })
 
-    connector.on('activity', (event: ActivityEvent) => {
-      this.activity.push(event)
-      if (this.activity.length > this.bufferSize) {
-        this.activity.splice(0, this.activity.length - this.bufferSize)
-      }
-      this.emit('activity', event)
-    })
+    connector.on('activity', (event: ActivityEvent) => this.addActivity(event))
 
     // Kick's non-chat events are undocumented; surface anything unmapped so the
     // mapping can be corrected from evidence instead of guesswork.
@@ -100,7 +110,10 @@ export class ChatManager extends EventEmitter {
     })
 
     this.connectors.set(platform.id, connector)
-    this.status.set(platform.id, { platformId: platform.id, state: 'connecting' })
+    this.status.set(platform.id, {
+      platformId: platform.id,
+      state: 'connecting'
+    })
     void connector.connect()
   }
 

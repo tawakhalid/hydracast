@@ -1,0 +1,19 @@
+name = "hydracast-broker"
+main = "src/index.ts"
+compatibility_date = "2026-09-05"
+
+# KICK_CLIENT_ID and KICK_CLIENT_SECRET are deliberately NOT here.
+# They are set with `wrangler secret put`, which stores them encrypted and
+# keeps them out of the repo. Putting them in [vars] would commit them.
+
+# One Durable Object per Kick channel, holding its recent follows and the
+# sockets listening to them. A Durable Object rather than KV because an alert
+# that arrives a minute late is not an alert, and KV is eventually consistent.
+[[durable_objects.bindings]]
+name = "KICK_CHANNELS"
+class_name = "KickChannel"
+
+# SQLite-backed, which is what makes Durable Objects available on the free plan.
+[[migrations]]
+tag = "v1"
+new_sqlite_classes = ["KickChannel"]

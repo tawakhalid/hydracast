@@ -1,0 +1,16 @@
+{
+  "name": "hydracast-broker",
+  "version": "1.0.0",
+  "private": true,
+  "description": "OAuth token broker for Hydracast; holds the Kick client secret so the desktop app does not have to.",
+  "scripts": {
+    "dev": "wrangler dev",
+    "deploy": "wrangler deploy",
+    "tail": "wrangler tail"
+  },
+  "devDependencies": {
+    "@cloudflare/workers-types": "^4.20250109.0",
+    "typescript": "^5.7.2",
+    "wrangler": "^3.99.0"
+  }
+}

@@ -42,7 +42,19 @@ const TOKEN_SKEW_MS = 60_000
 const TWITCH_TOKEN_URL = 'https://id.twitch.tv/oauth2/token'
 const TWITCH_STREAMS_URL = 'https://api.twitch.tv/helix/streams'
 const YOUTUBE_API = 'https://www.googleapis.com/youtube/v3'
+const KICK_AUTHED_API = 'https://api.kick.com/public/v1/channels'
 const KICK_CHANNEL_API = 'https://kick.com/api/v2/channels'
+
+/**
+ * Supplies a connected account's credentials for a destination, or null when
+ * there is none.
+ *
+ * A callback rather than an import of AuthSession, so this file stays testable
+ * without the auth stack and the two do not depend on each other.
+ */
+export type TokenProvider = (
+  platformId: string
+) => Promise<{ clientId: string; token: string; userId: string } | null>
 
 /** One reading: a count, plus why it is what it is. */
 export interface Sample {
@@ -60,6 +72,28 @@ const rec = (v: unknown): Record<string, unknown> =>
  * `livestream` is null while the channel is offline, which is a real answer
  * rather than a failure: Kick has simply not registered the relay's frames yet.
  */
+/**
+ * Reads the authenticated `GET /public/v1/channels` payload.
+ *
+ * Preferred over the anonymous reader below whenever an account is connected:
+ * it is an officially supported endpoint, needs no Cloudflare-dodging, and is
+ * the same request that supplies the stream key, so it is already understood.
+ */
+export function readKickAuthedCount(body: unknown): Sample {
+  const data = rec(body)['data']
+  // An empty list means Kick answered about no channel at all, which is not the
+  // same as a channel that is offline - reporting 0 there would be a lie.
+  const first = Array.isArray(data) && data.length ? rec(data[0]) : null
+  if (!first) return { count: -1, detail: 'Kick returned no channel' }
+  const stream = rec(first['stream'])
+  if (stream['is_live'] !== true) {
+    return { count: 0, detail: 'Kick has not registered the stream as live yet' }
+  }
+  const count = stream['viewer_count']
+  if (typeof count !== 'number') return { count: -1, detail: 'Kick returned no viewer count' }
+  return { count }
+}
+
 export function readKickCount(body: unknown): Sample {
   const live = rec(body)['livestream']
   if (!live) return { count: 0, detail: 'Kick has not registered the stream as live yet' }
@@ -141,6 +175,12 @@ export class ViewerCounter extends EventEmitter {
   private counts = new Map<string, ViewerCount>()
   /** Twitch app tokens, keyed by client id and shared by every platform on it. */
   private tokens = new Map<string, { token: string; expiresAt: number }>()
+  /** Set once the auth stack exists; absent in tests. */
+  private accountTokens: TokenProvider | null = null
+
+  setTokenProvider(provider: TokenProvider): void {
+    this.accountTokens = provider
+  }
 
   private log(level: LogEntry['level'], message: string): void {
     this.emit('log', level, message)
@@ -243,7 +283,8 @@ export class ViewerCounter extends EventEmitter {
       const detail = (err as Error).message
       const previous = this.counts.get(id)
       // Hold the last good number briefly, then admit that it is unknown.
-      const fresh = !!previous && previous.updatedAt > 0 && Date.now() - previous.updatedAt < STALE_MS
+      const fresh =
+        !!previous && previous.updatedAt > 0 && Date.now() - previous.updatedAt < STALE_MS
       this.counts.set(id, {
         platformId: id,
         count: fresh ? previous!.count : -1,
@@ -287,6 +328,17 @@ export class ViewerCounter extends EventEmitter {
   }
 
   private async sampleKick(platform: Platform): Promise<Sample> {
+    // A connected account gets the official endpoint; everyone else falls back
+    // to the undocumented one, which is all an anonymous client has.
+    const account = this.accountTokens ? await this.accountTokens(platform.id) : null
+    if (account) {
+      return readKickAuthedCount(
+        await this.fetchJson(KICK_AUTHED_API, {
+          headers: { ...BROWSER_HEADERS, authorization: `Bearer ${account.token}` }
+        })
+      )
+    }
+
     const slug = (platform.chat.kickChannel || '')
       .trim()
       .replace(/^https?:\/\/(www\.)?kick\.com\//i, '')
@@ -331,13 +383,31 @@ export class ViewerCounter extends EventEmitter {
   }
 
   private async sampleTwitch(platform: Platform): Promise<Sample> {
+    // A connected account is the better path by far: it needs no credential
+    // from the user, and querying by user id sidesteps a renamed channel.
+    const account = this.accountTokens ? await this.accountTokens(platform.id) : null
+    if (account) {
+      return readTwitchCount(
+        await this.fetchJson(
+          `${TWITCH_STREAMS_URL}?user_id=${encodeURIComponent(account.userId)}`,
+          {
+            headers: {
+              ...BROWSER_HEADERS,
+              'client-id': account.clientId,
+              authorization: `Bearer ${account.token}`
+            }
+          }
+        )
+      )
+    }
+
     const login = (platform.chat.twitchChannel || '').trim().replace(/^#/, '').toLowerCase()
     if (!login) throw new Error('No Twitch channel set in Settings > Chat & viewers')
 
     const clientId = (platform.viewers?.twitchClientId || '').trim()
     const secret = (platform.viewers?.twitchClientSecret || '').trim()
     if (!clientId || !secret) {
-      throw new Error('Twitch needs an app client id and secret - see Settings > Chat & viewers')
+      throw new Error('Connect your Twitch account in Settings > Chat & viewers to show viewers')
     }
 
     const url = `${TWITCH_STREAMS_URL}?user_login=${encodeURIComponent(login)}`

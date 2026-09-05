@@ -768,15 +768,25 @@ select {
    Platform cards
    ============================================================ */
 
+/* Padding matches .panel-head (14px 16px) so the cards line up with the panel
+   title above them. The 2px it used to carry was a leftover from before
+   destinations became a movable panel: the frame supplies no padding of its
+   own, so cards sat flush against the border while sitting 14px apart from
+   each other, which read as uneven spacing rather than as no margin.
+   `max-height` went with it - the panel frame owns the height now, and a
+   percentage cap fought it. */
 .platforms {
-  flex-shrink: 0;
+  flex: 1;
+  min-height: 0;
   display: grid;
   grid-template-columns: repeat(auto-fill, minmax(272px, 1fr));
+  /* Rows sit at their natural height instead of stretching to fill the panel
+     when there are only one or two destinations. */
+  align-content: start;
   gap: 14px;
   overflow-y: auto;
   overflow-x: hidden;
-  max-height: 46%;
-  padding: 2px;
+  padding: 14px 16px;
 }
 
 .pcard {
@@ -2029,4 +2039,528 @@ select.input option {
   border-radius: 3px;
   background: linear-gradient(90deg, var(--accent), var(--accent-2));
   box-shadow: 0 0 12px rgba(124, 92, 255, 0.65);
+}
+
+/* ============================================================
+   Account login
+   ============================================================ */
+
+.connect-modal {
+  max-width: 480px;
+  padding: 22px;
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+.connect-head {
+  display: flex;
+  align-items: center;
+  gap: 13px;
+}
+
+/*
+ * The code is the whole point of this screen, so it is sized to be read from
+ * across a desk and typed without a second look.
+ */
+.connect-code {
+  position: relative;
+  font-family: var(--mono);
+  font-size: 34px;
+  font-weight: 700;
+  letter-spacing: 0.22em;
+  text-align: center;
+  padding: 18px 40px 18px 22px;
+  border-radius: var(--r-md);
+  cursor: pointer;
+  color: #fff;
+  background: color-mix(in srgb, var(--pc, var(--accent)) 16%, transparent);
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--pc, var(--accent)) 42%, transparent);
+  transition: background 0.16s ease;
+}
+.connect-code:hover {
+  background: color-mix(in srgb, var(--pc, var(--accent)) 24%, transparent);
+}
+.connect-copy {
+  position: absolute;
+  right: 14px;
+  top: 50%;
+  transform: translateY(-50%);
+  color: var(--text-faint);
+}
+
+.connect-steps {
+  margin: 0;
+  padding-left: 20px;
+  display: flex;
+  flex-direction: column;
+  gap: 7px;
+  font-size: 12.5px;
+  color: var(--text-dim);
+  line-height: 1.5;
+}
+
+.linkish {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  color: var(--accent);
+  font-family: var(--mono);
+  font-size: 12.5px;
+  font-weight: 600;
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+
+.connect-foot,
+.connect-wait,
+.connect-error {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  font-size: 12.5px;
+  color: var(--text-dim);
+}
+.connect-wait {
+  justify-content: center;
+  padding: 18px 0;
+  flex-direction: column;
+  gap: 12px;
+}
+.connect-error {
+  align-items: flex-start;
+  color: var(--live);
+  line-height: 1.5;
+}
+
+.connect-actions {
+  display: flex;
+  align-items: flex-end;
+  gap: 12px;
+  border-top: 1px solid var(--stroke);
+  padding-top: 14px;
+}
+
+/* Connected account, shown in Settings in place of the Connect button. */
+.account-row {
+  display: flex;
+  align-items: center;
+  gap: 11px;
+  padding: 11px;
+  border-radius: var(--r-md);
+  background: rgba(0, 0, 0, 0.22);
+  box-shadow: inset 0 0 0 1px var(--stroke);
+}
+.account-avatar {
+  width: 38px;
+  height: 38px;
+  border-radius: 50%;
+  object-fit: cover;
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--pc, var(--accent)) 55%, transparent);
+}
+.account-avatar.placeholder {
+  background: rgba(255, 255, 255, 0.08);
+}
+.account-name {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-weight: 700;
+  font-size: 13.5px;
+}
+.account-ok {
+  display: grid;
+  place-items: center;
+  width: 15px;
+  height: 15px;
+  border-radius: 50%;
+  color: #fff;
+  background: var(--ok);
+}
+.account-login {
+  font-family: var(--mono);
+  font-size: 11.5px;
+  color: var(--text-faint);
+}
+
+.connect-cta {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  padding: 13px;
+  border-radius: var(--r-md);
+  background: color-mix(in srgb, var(--pc, var(--accent)) 9%, transparent);
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--pc, var(--accent)) 28%, transparent);
+}
+.connect-inline-err {
+  margin-top: 6px;
+  font-size: 11.5px;
+  color: var(--live);
+  line-height: 1.45;
+}
+
+/* Manual setup is still there, just folded away. */
+.disclosure {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  margin-top: 12px;
+  font-size: 11.5px;
+  font-weight: 600;
+  color: var(--text-faint);
+}
+.disclosure:hover {
+  color: var(--text);
+}
+.manual-block {
+  margin-top: 10px;
+  padding-top: 12px;
+  border-top: 1px solid var(--stroke);
+}
+
+/* ============================================================
+   Chat composer
+   ============================================================ */
+
+/*
+ * Sized against .chat-filters and .chat-foot rather than the message text: this
+ * is app chrome, not chat content, so it must not grow when the reader bumps
+ * the chat font size up for legibility on a second monitor.
+ */
+.chat-send {
+  padding: 8px 12px;
+  border-top: 1px solid var(--stroke);
+}
+
+.chat-send-row {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+}
+
+.send-targets {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  flex-shrink: 0;
+}
+
+.send-dot {
+  display: grid;
+  place-items: center;
+  width: 20px;
+  height: 20px;
+  border-radius: 6px;
+  color: #fff;
+  background: color-mix(in srgb, var(--pc, var(--accent)) 24%, transparent);
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--pc, var(--accent)) 48%, transparent);
+}
+.send-dot.off {
+  background: rgba(255, 255, 255, 0.04);
+  box-shadow: inset 0 0 0 1px var(--stroke);
+}
+
+.chat-send-input.input {
+  flex: 1;
+  min-width: 0;
+  height: 30px;
+  padding: 0 10px;
+  font-size: 12.5px;
+  border-radius: var(--r-sm);
+}
+.chat-send-input.input::placeholder {
+  color: var(--text-faint);
+}
+
+.send-count {
+  font-family: var(--mono);
+  font-size: 10.5px;
+  color: var(--text-faint);
+  flex-shrink: 0;
+}
+.send-count.over {
+  color: var(--live);
+  font-weight: 700;
+}
+
+.send-btn {
+  flex-shrink: 0;
+  width: 30px;
+  height: 30px;
+}
+
+.send-note {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  margin-top: 6px;
+  font-size: 11px;
+  color: var(--text-faint);
+  line-height: 1.4;
+}
+.send-note.err {
+  color: var(--live);
+}
+
+/* Read-only account state shown on the Chat tab; the Connect button lives on
+   Destinations so there is only ever one of it. */
+.chat-auth-note {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 10px 12px;
+  border-radius: var(--r-md);
+  background: rgba(0, 0, 0, 0.22);
+  box-shadow: inset 0 0 0 1px var(--stroke);
+  font-size: 12px;
+  color: var(--text-dim);
+  line-height: 1.5;
+}
+
+.chat-send-input.input[readonly],
+.input[readonly] {
+  color: var(--text-dim);
+  background: rgba(0, 0, 0, 0.42);
+  cursor: default;
+}
+
+/* Title and category editor, shown under the automated destination header once
+   an account owns the destination. */
+.stream-info {
+  margin: 10px 0 14px;
+  padding: 12px;
+  border-radius: var(--r-md);
+  background: rgba(0, 0, 0, 0.2);
+  box-shadow: inset 0 0 0 1px var(--stroke);
+}
+
+.category-picker {
+  position: relative;
+}
+
+.category-current {
+  width: 100%;
+  text-align: left;
+  padding: 8px 10px;
+  border: 0;
+  border-radius: var(--r-sm);
+  background: rgba(0, 0, 0, 0.42);
+  box-shadow: inset 0 0 0 1px var(--stroke);
+  color: var(--text);
+  font: inherit;
+  font-size: 12.5px;
+  cursor: pointer;
+}
+
+.category-current:hover {
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--pc, var(--accent)) 45%, var(--stroke));
+}
+
+.category-empty {
+  color: var(--text-faint);
+}
+
+/* Floats over the fields below rather than pushing them down, so the list does
+   not make the settings panel jump every time it opens. */
+.category-pop {
+  position: absolute;
+  z-index: 20;
+  top: calc(100% + 6px);
+  left: 0;
+  right: 0;
+  padding: 8px;
+  border-radius: var(--r-md);
+  background: var(--panel-solid, #14151a);
+  box-shadow:
+    0 18px 40px rgba(0, 0, 0, 0.55),
+    inset 0 0 0 1px var(--stroke);
+}
+
+.category-list {
+  max-height: 208px;
+  overflow-y: auto;
+  margin-top: 8px;
+}
+
+.category-item {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  width: 100%;
+  padding: 6px;
+  border: 0;
+  border-radius: var(--r-sm);
+  background: transparent;
+  color: var(--text);
+  font: inherit;
+  font-size: 12.5px;
+  text-align: left;
+  cursor: pointer;
+}
+
+.category-item:hover {
+  background: color-mix(in srgb, var(--pc, var(--accent)) 18%, transparent);
+}
+
+.category-item img,
+.category-art {
+  width: 28px;
+  height: 38px;
+  flex: none;
+  border-radius: 3px;
+  object-fit: cover;
+  background: rgba(255, 255, 255, 0.06);
+}
+
+.category-none {
+  padding: 14px 6px;
+  text-align: center;
+  font-size: 12px;
+  color: var(--text-faint);
+}
+
+.stream-info-foot {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 10px;
+  margin-top: 12px;
+}
+
+.stream-info-note {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  margin-right: auto;
+  font-size: 11.5px;
+  color: var(--text-dim);
+}
+
+.stream-info-note.ok {
+  color: var(--ok, #4ade80);
+}
+
+.stream-info-note.err {
+  color: var(--err, #f87171);
+}
+
+/* Entry point to the shared title editor, above the per-destination list. */
+.plan-cta {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  width: 100%;
+  margin-bottom: 14px;
+  padding: 12px 14px;
+  border: 0;
+  border-radius: var(--r-md);
+  background: rgba(0, 0, 0, 0.22);
+  box-shadow: inset 0 0 0 1px var(--stroke);
+  color: var(--text);
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+  transition: box-shadow 0.15s ease;
+}
+
+.plan-cta:hover {
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--accent) 50%, var(--stroke));
+}
+
+.stream-plan {
+  width: min(760px, 94vw);
+  max-height: 88vh;
+  display: flex;
+  flex-direction: column;
+}
+
+.stream-plan-empty {
+  padding: 28px 4px;
+  text-align: center;
+  font-size: 12.5px;
+  color: var(--text-faint);
+}
+
+.stream-plan-list {
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.stream-plan-row {
+  padding: 12px;
+  border-radius: var(--r-md);
+  background: rgba(0, 0, 0, 0.2);
+  box-shadow: inset 0 0 0 1px var(--stroke);
+}
+
+.stream-plan-who {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-bottom: 10px;
+}
+
+.stream-plan-name {
+  font-weight: 700;
+  font-size: 13px;
+}
+
+.stream-plan-login {
+  font-size: 11.5px;
+  color: var(--text-faint);
+}
+
+/* Title and category side by side, stacking when the modal is narrow. */
+.stream-plan-fields {
+  display: grid;
+  grid-template-columns: 1fr minmax(200px, 0.8fr);
+  gap: 12px;
+}
+
+@media (max-width: 620px) {
+  .stream-plan-fields {
+    grid-template-columns: 1fr;
+  }
+}
+
+.stream-plan-warn {
+  margin-top: 9px;
+  font-size: 11.5px;
+  color: var(--text-dim);
+}
+
+.stream-plan-who .stream-info-note {
+  margin-left: auto;
+  margin-right: 0;
+}
+
+/* Raised only for a login that used to work and stopped, so it is allowed to
+   be loud - it is never triggered by a connect the user simply abandoned. */
+.reconnect-banner {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin: 0 16px 12px;
+  padding: 11px 13px;
+  border-radius: var(--r-md);
+  background: color-mix(in srgb, var(--warn, #fbbf24) 14%, var(--panel));
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--warn, #fbbf24) 42%, transparent);
+}
+
+.reconnect-icon {
+  display: inline-flex;
+  color: var(--warn, #fbbf24);
+}
+
+.reconnect-title {
+  font-weight: 700;
+  font-size: 13px;
+}
+
+.reconnect-sub {
+  margin-top: 2px;
+  font-size: 11.5px;
+  color: var(--text-dim);
 }

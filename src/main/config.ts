@@ -47,7 +47,13 @@ function defaultConfig(): AppConfig {
  */
 function migrate(raw: Partial<AppConfig>): AppConfig {
   const base = defaultConfig()
-  const settings = ensureLayouts({ ...base.settings, ...(raw.settings ?? {}) })
+  const settings = ensureLayouts({
+    ...base.settings,
+    ...(raw.settings ?? {}),
+    // Nested, so a config saved before a field existed does not arrive with
+    // `overrides` undefined and blow up on the first lookup.
+    streamInfo: { ...base.settings.streamInfo, ...(raw.settings?.streamInfo ?? {}) }
+  })
   const platforms = (raw.platforms ?? base.platforms).map((p) => ({
     ...p,
     id: p.id || randomUUID(),

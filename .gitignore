@@ -2,11 +2,9 @@ node_modules/
 out/
 release/
 dist/
-test/.pipeline.cjs
-test/.kick.cjs
-test/.layout.cjs
-test/.activity.cjs
-test/.viewers.cjs
+# esbuild bundles the test harnesses to these before running them; one pattern
+# rather than a line per suite, which is how the list got out of date.
+test/.*.cjs
 *.tsbuildinfo
 *.log
 .env

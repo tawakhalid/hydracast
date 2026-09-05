@@ -3,26 +3,37 @@ import { AnimatePresence, motion } from 'framer-motion'
 import type {
   AppConfig,
   AppSettings,
+  AuthStatus,
   CheckResult,
   EncoderKind,
   Platform,
-  PlatformKind
+  PlatformKind,
+  StreamInfo
 } from '@shared/types'
-import { PLATFORM_PRESETS, supportsChat } from '@shared/types'
+import {
+  PLATFORM_PRESETS,
+  supportsAuth,
+  supportsChat,
+  supportsStreamInfo,
+  titleFor
+} from '@shared/types'
+import StreamInfoCard from './StreamInfoCard'
+import StreamInfoModal from './StreamInfoModal'
 import {
   AlertIcon,
   CheckIcon,
-  CopyIcon,
   ChevronIcon,
   CloseIcon,
+  CopyIcon,
   EyeIcon,
   EyeOffIcon,
   LinkIcon,
-  PlatformIcon,
   PLATFORM_COLORS,
+  PlatformIcon,
   PlusIcon,
   TrashIcon
 } from '../icons'
+import { AccountRow } from './ConnectModal'
 
 interface Props {
   config: AppConfig
@@ -33,6 +44,13 @@ interface Props {
   onSave: (config: AppConfig) => void
   onAddPlatform: (kind: PlatformKind) => void
   onRemovePlatform: (id: string) => void
+  /** Connected-account state, keyed by platform id. */
+  auth: Record<string, AuthStatus>
+  /** Platform id whose auth action is in flight, so buttons can disable. */
+  authBusy: string | null
+  onConnect: (platformId: string) => void
+  onDisconnect: (platformId: string) => void
+  onRefreshKey: (platformId: string) => void
 }
 
 type Tab = 'destinations' | 'chat' | 'app'
@@ -50,9 +68,7 @@ function Check({
 }) {
   return (
     <div className="check" onClick={() => onChange(!checked)}>
-      <div className={`checkbox ${checked ? 'on' : ''}`}>
-        {checked && <CheckIcon size={12} />}
-      </div>
+      <div className={`checkbox ${checked ? 'on' : ''}`}>{checked && <CheckIcon size={12} />}</div>
       <div className="check-text">
         <div className="t">{title}</div>
         {description && <div className="d">{description}</div>}
@@ -69,15 +85,23 @@ export default function SettingsModal({
   onClose,
   onSave,
   onAddPlatform,
-  onRemovePlatform
+  onRemovePlatform,
+  auth,
+  authBusy,
+  onConnect,
+  onDisconnect,
+  onRefreshKey
 }: Props) {
   const [tab, setTab] = useState<Tab>('destinations')
   const [draft, setDraft] = useState<AppConfig>(() => structuredClone(config))
-  const [openId, setOpenId] = useState<string | null>(focusPlatformId ?? config.platforms[0]?.id ?? null)
+  const [openId, setOpenId] = useState<string | null>(
+    focusPlatformId ?? config.platforms[0]?.id ?? null
+  )
   const [revealed, setRevealed] = useState<Set<string>>(new Set())
   const [testing, setTesting] = useState<string | null>(null)
   const [reports, setReports] = useState<Record<string, CheckResult[]>>({})
   const [showAdd, setShowAdd] = useState(false)
+  const [showPlan, setShowPlan] = useState(false)
 
   // Platforms can be added or removed from outside the modal (main process owns
   // the list), so re-sync when the incoming config changes identity.
@@ -101,7 +125,9 @@ export default function SettingsModal({
   const patchVideo = (id: string, patch: Partial<Platform['video']>): void =>
     setDraft((d) => ({
       ...d,
-      platforms: d.platforms.map((p) => (p.id === id ? { ...p, video: { ...p.video, ...patch } } : p))
+      platforms: d.platforms.map((p) =>
+        p.id === id ? { ...p, video: { ...p.video, ...patch } } : p
+      )
     }))
 
   const patchChat = (id: string, patch: Partial<Platform['chat']>): void =>
@@ -118,6 +144,31 @@ export default function SettingsModal({
       )
     }))
 
+  /**
+   * Records what was actually pushed to a destination.
+   *
+   * Kick cannot be read back while offline, so without this the field would
+   * show empty again the next time Settings opened and look as though the
+   * setting had been lost.
+   */
+  const rememberApplied = (platformId: string, info: StreamInfo): void => {
+    const plan = draft.settings.streamInfo
+    patchSettings({
+      streamInfo: {
+        ...plan,
+        overrides: { ...plan.overrides, [platformId]: info.title },
+        categories: {
+          ...plan.categories,
+          [platformId]: { id: info.categoryId, name: info.categoryName }
+        }
+      }
+    })
+  }
+
+  const connectedTargets = draft.platforms.filter(
+    (p) => supportsStreamInfo(p.kind) && auth[p.id]?.state === 'connected'
+  )
+
   const patchSettings = (patch: Partial<AppSettings>): void =>
     setDraft((d) => ({ ...d, settings: { ...d.settings, ...patch } }))
 
@@ -130,6 +181,16 @@ export default function SettingsModal({
     })
 
   const chatPlatforms = draft.platforms.filter((p) => supportsChat(p.kind))
+  // Manual credentials are still supported, but they are no longer the first
+  // thing a new user meets - the login does the same job with no dev portal.
+  const [manualSetup, setManualSetup] = useState<Set<string>>(new Set())
+  const toggleManual = (id: string): void =>
+    setManualSetup((prev) => {
+      const next = new Set(prev)
+      if (next.has(id)) next.delete(id)
+      else next.add(id)
+      return next
+    })
 
   const runTest = async (platform: Platform): Promise<void> => {
     setTesting(platform.id)
@@ -188,6 +249,21 @@ export default function SettingsModal({
         <div className="modal-body">
           {tab === 'destinations' && (
             <>
+              {/* The shared editor sits above the per-destination list because
+                  it is the one that answers "what am I streaming today"; the
+                  editors below stay for overriding a single destination. */}
+              <button className="plan-cta" onClick={() => setShowPlan(true)}>
+                <div style={{ flex: 1, minWidth: 0 }}>
+                  <div style={{ fontWeight: 700, fontSize: 13 }}>Titles &amp; categories</div>
+                  <div className="hint" style={{ margin: '3px 0 0' }}>
+                    {connectedTargets.length
+                      ? `Set one title and each category across ${connectedTargets.length} connected destination${connectedTargets.length === 1 ? '' : 's'}`
+                      : 'Connect an account below to set titles from here'}
+                  </div>
+                </div>
+                <span className="btn sm">Open</span>
+              </button>
+
               {draft.platforms.map((p) => {
                 const color = PLATFORM_COLORS[p.kind]
                 const open = openId === p.id
@@ -255,6 +331,59 @@ export default function SettingsModal({
                             </div>
                           </div>
 
+                          {supportsAuth(p.kind) && (
+                            <>
+                              <div className="section-label">Automated destination</div>
+                              {auth[p.id]?.state === 'connected' ? (
+                                <>
+                                  <AccountRow
+                                    status={auth[p.id]}
+                                    busy={authBusy === p.id}
+                                    onDisconnect={() => onDisconnect(p.id)}
+                                    onRefreshKey={() => onRefreshKey(p.id)}
+                                  />
+                                  <StreamInfoCard
+                                    platform={p}
+                                    fallback={{
+                                      title: titleFor(draft.settings.streamInfo, p.id),
+                                      categoryId:
+                                        draft.settings.streamInfo.categories[p.id]?.id ?? '',
+                                      categoryName:
+                                        draft.settings.streamInfo.categories[p.id]?.name ?? ''
+                                    }}
+                                    onApplied={(info) => rememberApplied(p.id, info)}
+                                  />
+                                </>
+                              ) : (
+                                <div className="connect-cta">
+                                  <div style={{ flex: 1, minWidth: 0 }}>
+                                    <div style={{ fontWeight: 700, fontSize: 13 }}>
+                                      Connect your {p.name} account
+                                    </div>
+                                    <div className="hint" style={{ margin: '3px 0 0' }}>
+                                      Fills in the stream key and channel below, shows your viewer
+                                      count, and lets you send chat from the composer.
+                                    </div>
+                                    {auth[p.id]?.state === 'error' && (
+                                      <div className="connect-inline-err">{auth[p.id]?.detail}</div>
+                                    )}
+                                  </div>
+                                  <button
+                                    className="btn primary"
+                                    onClick={() => onConnect(p.id)}
+                                    disabled={authBusy === p.id || auth[p.id]?.state === 'pending'}
+                                  >
+                                    {auth[p.id]?.state === 'pending' ? 'Waiting...' : 'Connect'}
+                                  </button>
+                                </div>
+                              )}
+                            </>
+                          )}
+
+                          <div className="section-label">
+                            {supportsAuth(p.kind) ? 'Manual destination' : 'Destination'}
+                          </div>
+
                           <div className="field">
                             <label>RTMP ingest URL</label>
                             <input
@@ -270,6 +399,8 @@ export default function SettingsModal({
                             )}
                           </div>
 
+                          {/* Read-only while an account owns the key: a hand edit
+                              would be silently replaced on the next refresh. */}
                           <div className="field">
                             <label>Stream key</label>
                             <div className="key-input">
@@ -278,6 +409,7 @@ export default function SettingsModal({
                                 type={revealed.has(p.id) ? 'text' : 'password'}
                                 placeholder="live_123456789_abcdefghijklmnop"
                                 value={p.streamKey}
+                                readOnly={auth[p.id]?.state === 'connected'}
                                 onChange={(e) => patchPlatform(p.id, { streamKey: e.target.value })}
                               />
                               <div className="key-actions">
@@ -341,7 +473,11 @@ export default function SettingsModal({
                               </button>
                               {reports[p.id].map((c, i) => (
                                 <div key={i} className={`check-row ${c.level}`}>
-                                  {c.level === 'ok' ? <CheckIcon size={12} /> : <AlertIcon size={12} />}
+                                  {c.level === 'ok' ? (
+                                    <CheckIcon size={12} />
+                                  ) : (
+                                    <AlertIcon size={12} />
+                                  )}
                                   <strong>{c.label}</strong>
                                   <span>{c.detail}</span>
                                 </div>
@@ -595,81 +731,128 @@ export default function SettingsModal({
 
                   {p.kind === 'twitch' && (
                     <>
-                      <div className="field">
-                        <label>Twitch channel</label>
-                        <input
-                          className="input mono"
-                          placeholder="your_channel_name"
-                          value={p.chat.twitchChannel ?? ''}
-                          onChange={(e) => patchChat(p.id, { twitchChannel: e.target.value })}
-                        />
-                        <div className="hint" style={{ marginTop: 6 }}>
-                          Chat is a read-only anonymous connection &mdash; no login or token
-                          required.
+                      {auth[p.id]?.state === 'connected' ? (
+                        <div className="chat-auth-note">
+                          <span className="dot ok" />
+                          Reading chat as <strong>{auth[p.id]?.account?.displayName}</strong>{' '}
+                          &mdash; channel filled in from your connected account.
                         </div>
-                      </div>
+                      ) : (
+                        <div className="chat-auth-note">
+                          <span className="dot" />
+                          Connect this account on the Destinations tab to fill the channel in
+                          automatically and send chat.
+                        </div>
+                      )}
 
-                      <div className="section-label">Viewer count (optional)</div>
-                      <div className="row c2">
-                        <div className="field" style={{ marginBottom: 0 }}>
-                          <label>App client id</label>
-                          <input
-                            className="input mono"
-                            placeholder="from dev.twitch.tv"
-                            value={p.viewers?.twitchClientId ?? ''}
-                            onChange={(e) => patchViewers(p.id, { twitchClientId: e.target.value })}
-                          />
+                      <button className="disclosure" onClick={() => toggleManual(p.id)}>
+                        <ChevronIcon size={13} />
+                        Set up manually instead
+                      </button>
+
+                      {manualSetup.has(p.id) && (
+                        <div className="manual-block">
+                          <div className="field">
+                            <label>Twitch channel</label>
+                            <input
+                              className="input mono"
+                              placeholder="your_channel_name"
+                              value={p.chat.twitchChannel ?? ''}
+                              onChange={(e) => patchChat(p.id, { twitchChannel: e.target.value })}
+                            />
+                            <div className="hint" style={{ marginTop: 6 }}>
+                              Chat reading is anonymous and needs only the channel name.
+                            </div>
+                          </div>
+
+                          <div className="section-label">Viewer count without a login</div>
+                          <div className="row c2">
+                            <div className="field" style={{ marginBottom: 0 }}>
+                              <label>App client id</label>
+                              <input
+                                className="input mono"
+                                placeholder="from dev.twitch.tv"
+                                value={p.viewers?.twitchClientId ?? ''}
+                                onChange={(e) =>
+                                  patchViewers(p.id, { twitchClientId: e.target.value })
+                                }
+                              />
+                            </div>
+                            <div className="field" style={{ marginBottom: 0 }}>
+                              <label>App client secret</label>
+                              <input
+                                className="input mono"
+                                type="password"
+                                placeholder="from dev.twitch.tv"
+                                value={p.viewers?.twitchClientSecret ?? ''}
+                                onChange={(e) =>
+                                  patchViewers(p.id, { twitchClientSecret: e.target.value })
+                                }
+                              />
+                            </div>
+                          </div>
+                          <div className="hint" style={{ marginTop: 8 }}>
+                            Only needed if you would rather not connect an account. Register an app
+                            at <span className="mono">dev.twitch.tv/console/apps</span> as a
+                            Confidential client. This path cannot send chat or read your stream key.
+                          </div>
                         </div>
-                        <div className="field" style={{ marginBottom: 0 }}>
-                          <label>App client secret</label>
-                          <input
-                            className="input mono"
-                            type="password"
-                            placeholder="from dev.twitch.tv"
-                            value={p.viewers?.twitchClientSecret ?? ''}
-                            onChange={(e) =>
-                              patchViewers(p.id, { twitchClientSecret: e.target.value })
-                            }
-                          />
-                        </div>
-                      </div>
-                      <div className="hint" style={{ marginTop: 8 }}>
-                        The only thing Twitch will not hand out anonymously. Register an
-                        application at{' '}
-                        <span className="mono">dev.twitch.tv/console/apps</span> and paste its
-                        credentials here &mdash; they authenticate the app, not your account, and
-                        read nothing beyond the public viewer count. Leave blank to skip the count.
-                      </div>
+                      )}
                     </>
                   )}
 
                   {p.kind === 'kick' && (
                     <>
-                      <div className="field">
-                        <label>Kick channel</label>
-                        <input
-                          className="input mono"
-                          placeholder="your_channel_name"
-                          value={p.chat.kickChannel ?? ''}
-                          onChange={(e) => patchChat(p.id, { kickChannel: e.target.value })}
-                        />
-                      </div>
-                      <div className="field" style={{ marginBottom: 0 }}>
-                        <label>Chatroom id (only if the lookup is blocked)</label>
-                        <input
-                          className="input mono"
-                          placeholder="auto-detected from the channel name"
-                          value={p.chat.kickChatroomId ?? ''}
-                          onChange={(e) => patchChat(p.id, { kickChatroomId: e.target.value })}
-                        />
-                      </div>
-                      <div className="hint" style={{ marginTop: 8 }}>
-                        Read-only, no login required; the channel name also feeds the viewer count.
-                        Kick puts the channel lookup behind
-                        Cloudflare, so if the feed reports a challenge, open{' '}
-                        <span className="mono">kick.com/api/v2/channels/your_channel</span> in a
-                        browser and paste the <span className="mono">chatroom.id</span> above.
-                      </div>
+                      {auth[p.id]?.state === 'connected' ? (
+                        <div className="chat-auth-note">
+                          <span className="dot ok" />
+                          Reading chat as <strong>{auth[p.id]?.account?.displayName}</strong>{' '}
+                          &mdash; channel filled in from your connected account.
+                        </div>
+                      ) : (
+                        <div className="chat-auth-note">
+                          <span className="dot" />
+                          Connect this account on the Destinations tab to fill the channel in
+                          automatically and send chat.
+                        </div>
+                      )}
+
+                      <button className="disclosure" onClick={() => toggleManual(p.id)}>
+                        <ChevronIcon size={13} />
+                        Set up manually instead
+                      </button>
+
+                      {manualSetup.has(p.id) && (
+                        <div className="manual-block">
+                          <div className="field">
+                            <label>Kick channel</label>
+                            <input
+                              className="input mono"
+                              placeholder="your_channel_name"
+                              value={p.chat.kickChannel ?? ''}
+                              onChange={(e) => patchChat(p.id, { kickChannel: e.target.value })}
+                            />
+                          </div>
+                          <div className="field" style={{ marginBottom: 0 }}>
+                            <label>Chatroom id (only if the lookup is blocked)</label>
+                            <input
+                              className="input mono"
+                              placeholder="auto-detected from the channel name"
+                              value={p.chat.kickChatroomId ?? ''}
+                              onChange={(e) => patchChat(p.id, { kickChatroomId: e.target.value })}
+                            />
+                          </div>
+                          <div className="hint" style={{ marginTop: 8 }}>
+                            Reading chat needs no login; the channel name also feeds the viewer
+                            count. Kick puts the channel lookup behind Cloudflare, so if the feed
+                            reports a challenge, open{' '}
+                            <span className="mono">kick.com/api/v2/channels/your_channel</span> in a
+                            browser and paste the <span className="mono">chatroom.id</span> above. A
+                            connected account skips all of this and uses Kick's official API
+                            instead.
+                          </div>
+                        </div>
+                      )}
                     </>
                   )}
 
@@ -848,9 +1031,7 @@ export default function SettingsModal({
                 <select
                   className="input"
                   value={draft.settings.theme}
-                  onChange={(e) =>
-                    patchSettings({ theme: e.target.value as AppSettings['theme'] })
-                  }
+                  onChange={(e) => patchSettings({ theme: e.target.value as AppSettings['theme'] })}
                 >
                   <option value="midnight">Midnight (violet)</option>
                   <option value="nebula">Nebula (magenta)</option>
@@ -880,6 +1061,18 @@ export default function SettingsModal({
           </button>
         </div>
       </motion.div>
+
+      <AnimatePresence>
+        {showPlan && (
+          <StreamInfoModal
+            targets={connectedTargets}
+            auth={auth}
+            plan={draft.settings.streamInfo}
+            onChange={(streamInfo) => patchSettings({ streamInfo })}
+            onClose={() => setShowPlan(false)}
+          />
+        )}
+      </AnimatePresence>
     </motion.div>
   )
 }

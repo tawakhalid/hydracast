@@ -115,6 +115,84 @@ Click a platform chip to mute that source in the feed, double-click it to reconn
 
 ---
 
+## Connecting your account
+
+**Twitch** and **Kick** destinations can be connected with a login instead of
+hand-copied credentials. Settings > Destinations > **Automated destination** >
+**Connect**, and Hydracast fills in the rest:
+
+- your channel name, so chat needs no typing
+- your **stream key** - and for Kick the ingest URL too - read straight from the
+  platform, with a Refresh button for when you reset it
+- your viewer count, with no developer app of your own required
+- your stream title and category, editable from inside Hydracast
+- permission to send chat as you, from the composer under the chat feed
+- follower alerts in the activity feed
+
+Neither ever sees your password: approval happens on the platform's own site.
+Twitch shows a code at `twitch.tv/activate`; Kick opens a consent page and
+returns to a loopback listener that closes straight after. Tokens are encrypted
+at rest with the operating system's own key store (DPAPI on Windows) and kept in
+`hydracast.auth.json`, deliberately apart from the plain-text config.
+
+Twitch logins do not lapse: our client type has no refresh-token deadline, so
+only a password change or revoking Hydracast ends one. Kick's do eventually -
+its tokens carry an expiry - and when any login stops working the app says so on
+launch with a Reconnect button rather than letting you find out mid-broadcast.
+
+Disconnect revokes the token with Twitch; Kick publishes no revocation endpoint,
+so its tokens are dropped locally and left to expire.
+
+Manual setup is still there under "Set up manually instead" for anyone who would
+rather not connect an account. YouTube remains manual: its scopes are
+*sensitive*, which caps an unverified Google project at 100 users for its
+lifetime - a worse outcome than typing a stream key.
+
+### Kick needs one piece of infrastructure
+
+Kick has no public OAuth client type: its token endpoint demands the client
+secret for the code exchange *and* for every refresh. Hydracast ships unpacked,
+so that secret cannot travel with it. It lives in a small Cloudflare Worker
+instead - see [`broker/`](broker/) - which also receives Kick's follower
+webhooks, since Kick delivers events only to a public HTTPS URL. The app runs
+the whole PKCE flow itself and never sees the secret.
+
+---
+
+## Sending chat
+
+The composer under the chat feed sends as your connected account.
+
+- Type a message and it goes to **every** connected platform at once.
+- Prefix it to pick one: `/twitch hello`, `/kick hello`, `/youtube hello` (`/yt`
+  works too).
+- The chips above the box show exactly where a message will land before you send.
+
+Twitch chat commands (`/me`, `/ban`) are not processed by the send API, so an
+unrecognised slash is sent as literal text and the composer says so rather than
+pretending it ran a command.
+
+---
+
+## Titles and categories
+
+Settings > Destinations > **Titles & categories** sets what every connected
+destination is showing, without opening a dashboard per platform.
+
+- One shared title, pushed to every connected destination, is optional - turn it
+  off and each destination keeps its own.
+- Any destination can override the shared title by typing its own; clear it to
+  rejoin.
+- Categories are **per destination** on purpose. Twitch and Kick both number
+  their games, but with different numbers for the same game, so a shared
+  category would quietly set the wrong one somewhere.
+
+Kick reports the title and category only for a *live* stream, so while you are
+offline they read back blank however they were set. Hydracast shows what it last
+sent in that case and says so, rather than presenting an empty field as fact.
+
+---
+
 ## Viewer counts
 
 While a destination is live, its card shows the platform's own concurrent viewer count next to
@@ -122,10 +200,10 @@ the name, and the header sums every destination that is reporting one. The count
 moment that destination stops - an idle relay has no audience to report, and polling one would
 only spend API quota for nothing.
 
-- **Twitch** — the one number Twitch will not hand out anonymously. Register an application at
+- **Twitch** — connect your account and it just works. Without a login, Twitch will not publish
+  a count anonymously, so the fallback is to register your own application at
   `dev.twitch.tv/console/apps` and paste its client id and secret into the Chat & viewers tab.
-  Those are client-credentials: they authenticate the app, not your account, and read nothing
-  beyond the public viewer count. Leave them blank and the card simply shows `--`.
+  With neither, the card simply shows `--`.
 - **YouTube** — read from the same Data API key as chat, sampled once a minute. A broadcaster who
   has hidden the count on the watch page hides it here too.
 - **Kick** — read from the same undocumented channel endpoint that resolves the chatroom id, so
@@ -218,6 +296,7 @@ src/
     config.ts      persisted settings (userData/hydracast.config.json)
     diagnose.ts    destination config + DNS/TCP/TLS checks
     viewers.ts     per-platform concurrent viewer counts while live
+    auth/          device-code login, encrypted token store, stream-key fetch
     http.ts        requests issued through Chromium's network stack
     chat/          Twitch IRC, YouTube live chat and Kick Pusher connectors
   preload/       context-isolated IPC bridge

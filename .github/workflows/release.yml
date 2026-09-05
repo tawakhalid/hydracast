@@ -32,6 +32,11 @@ jobs:
       - name: Typecheck
         run: npm run typecheck
 
+      # Guards the parsers that face each platform's API. These are the pieces
+      # most likely to break from a change nobody here controls.
+      - name: Test
+        run: npm test
+
       # electron-builder only packages what electron-vite has already compiled
       # into out/, so this step is required before packaging.
       - name: Compile main, preload and renderer

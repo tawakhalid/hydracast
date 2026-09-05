@@ -4,13 +4,7 @@
  */
 
 export type PlatformKind =
-  | 'twitch'
-  | 'youtube'
-  | 'kick'
-  | 'facebook'
-  | 'trovo'
-  | 'tiktok'
-  | 'custom'
+  'twitch' | 'youtube' | 'kick' | 'facebook' | 'trovo' | 'tiktok' | 'custom'
 
 /** How a platform's video is delivered to the destination. */
 export type EncodeMode = 'copy' | 'reencode'
@@ -171,6 +165,35 @@ export interface AppSettings {
    */
   draftLayout: LayoutValues | null
   theme: 'midnight' | 'nebula' | 'carbon'
+  /** One title pushed to every connected destination; see StreamInfoPlan. */
+  streamInfo: StreamInfoPlan
+}
+
+/**
+ * The shared "what am I streaming" state.
+ *
+ * Optional automation rather than the only path: the shared title is applied to
+ * every connected destination that has not been overridden, and any destination
+ * can opt out by setting its own. Categories are never shared - Twitch and Kick
+ * number their games differently, so an id copied across would select the wrong
+ * game rather than none - which is why they are keyed per destination.
+ */
+export interface StreamInfoPlan {
+  /** Push the shared title on apply. Off means every destination is manual. */
+  enabled: boolean
+  /** The title used by any destination without an override. */
+  title: string
+  /** Per-destination title that wins over the shared one. */
+  overrides: Record<string, string>
+  /** Per-destination category, because ids are not portable between platforms. */
+  categories: Record<string, { id: string; name: string }>
+}
+
+/** The title a destination will actually receive. */
+export function titleFor(plan: StreamInfoPlan, platformId: string): string {
+  const override = plan.overrides[platformId]
+  if (typeof override === 'string' && override.trim()) return override
+  return plan.enabled ? plan.title : ''
 }
 
 export interface AppConfig {
@@ -178,13 +201,7 @@ export interface AppConfig {
   platforms: Platform[]
 }
 
-export type RelayStatus =
-  | 'idle'
-  | 'starting'
-  | 'live'
-  | 'reconnecting'
-  | 'error'
-  | 'stopping'
+export type RelayStatus = 'idle' | 'starting' | 'live' | 'reconnecting' | 'error' | 'stopping'
 
 export interface RelayStats {
   platformId: string
@@ -257,14 +274,7 @@ export interface ChatMessage {
  * source rather than being emitted now.
  */
 export type ActivityKind =
-  | 'follow'
-  | 'subscription'
-  | 'gift'
-  | 'raid'
-  | 'cheer'
-  | 'donation'
-  | 'announcement'
-  | 'other'
+  'follow' | 'subscription' | 'gift' | 'raid' | 'cheer' | 'donation' | 'announcement' | 'other'
 
 export interface ActivityEvent {
   id: string
@@ -345,6 +355,156 @@ export function totalViewers(counts: Record<string, ViewerCount>): number {
   return known.length ? known.reduce((sum, c) => sum + c.count, 0) : -1
 }
 
+/* ------------------------------------------------------------------ auth ---
+ * Connected accounts.
+ *
+ * Hydracast ships its own Twitch client id and asks the user to approve it,
+ * rather than asking every user to register a developer app of their own. The
+ * id is public by design and carries no secret, so it is safe in the binary -
+ * see AUTH_CLIENT_IDS in main/auth/device.ts for why the app must be
+ * registered as a Public client for this to be possible at all.
+ */
+
+export type AuthState = 'disconnected' | 'pending' | 'connected' | 'error'
+
+export interface AuthAccount {
+  kind: PlatformKind
+  /** The platform's own id for the user, needed by most write endpoints. */
+  userId: string
+  /** Lower-case login/slug, which is also the chat channel name. */
+  login: string
+  displayName: string
+  avatarUrl?: string
+  scopes: string[]
+  /** Epoch ms the access token expires. Twitch issues only 4 hours. */
+  expiresAt: number
+}
+
+/**
+ * Shown while a device flow waits for the user to approve it. The code is
+ * short-lived, so the UI counts down against `expiresAt` rather than leaving a
+ * dead code on screen.
+ */
+export interface DeviceVerification {
+  userCode: string
+  url: string
+  expiresAt: number
+}
+
+export interface AuthStatus {
+  platformId: string
+  state: AuthState
+  account?: AuthAccount
+  verification?: DeviceVerification
+  detail?: string
+  /**
+   * A previously working login stopped working and needs the user to log in
+   * again - distinct from a connect attempt that simply failed. Only this
+   * deserves an unprompted banner: nagging about an attempt the user just
+   * abandoned would be noise, while a session that died while the app was shut
+   * would otherwise be discovered mid-broadcast.
+   */
+  needsReconnect?: boolean
+}
+
+/** Platforms that can be connected with a login rather than pasted keys. */
+export const AUTH_CAPABLE: PlatformKind[] = ['twitch', 'kick']
+
+export function supportsAuth(kind: PlatformKind): boolean {
+  return AUTH_CAPABLE.includes(kind)
+}
+
+/**
+ * What the viewer sees before they click: the title and the category.
+ *
+ * Editable only for a connected account - both platforms gate the write behind
+ * a scope, and neither exposes it to an anonymous client. Kept as one object
+ * because a partial update to either platform would clear the other field.
+ */
+export interface StreamInfo {
+  title: string
+  categoryId: string
+  categoryName: string
+}
+
+/** One entry from a category search, for the picker. */
+export interface CategoryOption {
+  id: string
+  name: string
+  boxArtUrl?: string
+}
+
+/** The result of pushing stream info to one destination. */
+export interface StreamInfoResult {
+  platformId: string
+  ok: boolean
+  detail?: string
+}
+
+/**
+ * Twitch and Kick both allow a logged-in client to set these. YouTube does too,
+ * but its login is deliberately not built, so it is absent here rather than
+ * offered and then failing.
+ */
+export const STREAM_INFO_CAPABLE: PlatformKind[] = ['twitch', 'kick']
+
+export function supportsStreamInfo(kind: PlatformKind): boolean {
+  return STREAM_INFO_CAPABLE.includes(kind)
+}
+
+/* ------------------------------------------------------------ chat send ---*/
+
+/** Prefix that routes a composed message to a single platform. */
+export const SEND_PREFIXES: Record<string, PlatformKind> = {
+  '/twitch': 'twitch',
+  '/kick': 'kick',
+  '/youtube': 'youtube',
+  '/yt': 'youtube'
+}
+
+export interface ComposedMessage {
+  /** The text to send, with any routing prefix stripped. */
+  text: string
+  /** The single platform to send to, or null for every connected one. */
+  route: PlatformKind | null
+  /**
+   * True when the text opens with a slash that is not a routing prefix. Twitch
+   * commands like /me are not processed by the send endpoint, so this is sent
+   * as literal text and the UI warns rather than pretending it is a command.
+   */
+  literalSlash: boolean
+}
+
+/**
+ * Splits `/twitch hello` into a route and a message.
+ *
+ * Bare text goes everywhere, which is the whole point of a multi-platform
+ * relay: one line typed once reaches every audience.
+ */
+export function parseCompose(input: string): ComposedMessage {
+  const trimmed = input.trim()
+  if (!trimmed.startsWith('/')) {
+    return { text: trimmed, route: null, literalSlash: false }
+  }
+
+  const space = trimmed.search(/\s/)
+  const head = (space < 0 ? trimmed : trimmed.slice(0, space)).toLowerCase()
+  const rest = space < 0 ? '' : trimmed.slice(space + 1).trim()
+
+  const route = SEND_PREFIXES[head]
+  if (!route) return { text: trimmed, route: null, literalSlash: true }
+  return { text: rest, route, literalSlash: false }
+}
+
+/** What one platform did with a message that was sent to it. */
+export interface SendOutcome {
+  platformId: string
+  kind: PlatformKind
+  ok: boolean
+  /** Why it was refused - Twitch's drop_reason, an API error, a missing login. */
+  detail?: string
+}
+
 export type CheckLevel = 'ok' | 'warn' | 'error'
 
 /** One line of a destination diagnostic report. */
@@ -370,6 +530,8 @@ export interface Snapshot {
   chatStatus: Record<string, ChatStatus>
   /** Keyed by platform id; only live destinations appear. */
   viewers: Record<string, ViewerCount>
+  /** Keyed by platform id; every auth-capable destination appears. */
+  auth: Record<string, AuthStatus>
   broadcasting: boolean
   sessionStartedAt: number | null
 }
@@ -493,7 +655,8 @@ export const DEFAULT_SETTINGS: AppSettings = {
   ],
   activeLayoutId: DEFAULT_LAYOUT_ID,
   draftLayout: null,
-  theme: 'midnight'
+  theme: 'midnight',
+  streamInfo: { enabled: false, title: '', overrides: {}, categories: {} }
 }
 
 /**
@@ -600,7 +763,9 @@ export function placePanel(
 
   const orders = new Map(full.map((p, i) => [p.id, i]))
   const panels = values.panels.map((p) =>
-    orders.has(p.id) ? { ...p, region: p.id === id ? region : p.region, order: orders.get(p.id)! } : { ...p }
+    orders.has(p.id)
+      ? { ...p, region: p.id === id ? region : p.region, order: orders.get(p.id)! }
+      : { ...p }
   )
   return { ...layoutValuesOf(values), panels: renumber(panels) }
 }
@@ -630,11 +795,7 @@ function renumber(panels: PanelState[]): PanelState[] {
  * layout to its own name is not treated as a collision. Suffixes rather than
  * rejecting, so saving a layout never fails on a name clash.
  */
-export function uniqueLayoutName(
-  name: string,
-  layouts: LayoutPreset[],
-  exceptId?: string
-): string {
+export function uniqueLayoutName(name: string, layouts: LayoutPreset[], exceptId?: string): string {
   const trimmed = name.trim() || 'Layout'
   const taken = new Set(
     layouts.filter((l) => l.id !== exceptId).map((l) => l.name.trim().toLowerCase())
@@ -660,9 +821,7 @@ export function ensureLayouts(settings: AppSettings): AppSettings {
 
   const fill = (values: LayoutValues): LayoutValues => {
     const existing = Array.isArray(values.panels) ? values.panels : []
-    const panels = DEFAULT_PANELS.map(
-      (d) => existing.find((p) => p.id === d.id) ?? { ...d }
-    )
+    const panels = DEFAULT_PANELS.map((d) => existing.find((p) => p.id === d.id) ?? { ...d })
     return {
       chatFontSize: values.chatFontSize ?? builtIn.chatFontSize,
       chatWidth: values.chatWidth ?? builtIn.chatWidth,
@@ -686,4 +845,3 @@ export function ensureLayouts(settings: AppSettings): AppSettings {
     draftLayout: settings.draftLayout ? fill(settings.draftLayout) : null
   }
 }
-

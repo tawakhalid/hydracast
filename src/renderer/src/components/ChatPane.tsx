@@ -1,8 +1,9 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { AnimatePresence, motion } from 'framer-motion'
-import type { ChatMessage, ChatStatus, Platform } from '@shared/types'
+import type { AuthStatus, ChatMessage, ChatStatus, Platform, SendOutcome } from '@shared/types'
 import { supportsChat } from '@shared/types'
 import { ChatIcon, PlatformIcon, PLATFORM_COLORS, RefreshIcon, TrashIcon } from '../icons'
+import ChatSend, { type SendTarget } from './ChatSend'
 
 /** Bounds for the chat text-size slider, px. */
 const MIN_FS = 11
@@ -12,11 +13,13 @@ interface Props {
   messages: ChatMessage[]
   platforms: Platform[]
   chatStatus: Record<string, ChatStatus>
+  auth: Record<string, AuthStatus>
   /** Message text size in px; everything in a row scales off it. */
   fontSize: number
   onFontSize: (size: number) => void
   onClear: () => void
   onReconnect: (platformId: string) => void
+  onSend: (platformIds: string[], text: string) => Promise<SendOutcome[]>
 }
 
 function fmtTime(ts: number): string {
@@ -31,10 +34,12 @@ export default function ChatPane({
   messages,
   platforms,
   chatStatus,
+  auth,
   fontSize,
   onFontSize,
   onClear,
-  onReconnect
+  onReconnect,
+  onSend
 }: Props) {
   const listRef = useRef<HTMLDivElement>(null)
   const [muted, setMuted] = useState<Set<string>>(new Set())
@@ -47,6 +52,30 @@ export default function ChatPane({
   const shownSize = dragging ? draftSize : fontSize
 
   const chatPlatforms = useMemo(() => platforms.filter((p) => supportsChat(p.kind)), [platforms])
+
+  /*
+   * The snapshot hands us a fresh `auth` object every second, which would
+   * re-render the composer - and the text input the user is typing into - on
+   * every tick. Collapsing what the composer actually needs into a string means
+   * the memo below only produces a new array when something really changed.
+   */
+  const sendKey = chatPlatforms
+    .map((p) => `${p.id}:${auth[p.id]?.state ?? ''}:${auth[p.id]?.account?.displayName ?? ''}`)
+    .join('|')
+
+  const sendTargets = useMemo<SendTarget[]>(
+    () =>
+      chatPlatforms
+        .filter((p) => auth[p.id]?.state === 'connected')
+        .map((p) => ({
+          id: p.id,
+          kind: p.kind,
+          name: p.name,
+          as: auth[p.id]?.account?.displayName ?? p.name
+        })),
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [sendKey]
+  )
 
   const visible = useMemo(
     () =>
@@ -236,6 +265,8 @@ export default function ChatPane({
           </motion.button>
         )}
       </AnimatePresence>
+
+      <ChatSend targets={sendTargets} onSend={onSend} />
 
       <div className="chat-foot">
         <span className={`dot ${connectedCount ? 'ok' : ''}`} />

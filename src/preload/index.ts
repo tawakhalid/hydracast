@@ -2,12 +2,17 @@ import { contextBridge, ipcRenderer } from 'electron'
 import type {
   ActivityEvent,
   AppConfig,
+  AuthStatus,
+  CategoryOption,
   ChatMessage,
   CheckResult,
   LogEntry,
   Platform,
   PlatformKind,
-  Snapshot
+  SendOutcome,
+  Snapshot,
+  StreamInfo,
+  StreamInfoResult
 } from '@shared/types'
 
 const api = {
@@ -25,6 +30,23 @@ const api = {
   stopRelay: (id: string): Promise<void> => ipcRenderer.invoke('relay:stop', id),
   startBroadcast: (): Promise<void> => ipcRenderer.invoke('broadcast:start'),
   stopBroadcast: (): Promise<void> => ipcRenderer.invoke('broadcast:stop'),
+
+  connectAccount: (id: string): Promise<Record<string, AuthStatus>> =>
+    ipcRenderer.invoke('auth:connect', id),
+  disconnectAccount: (id: string): Promise<AppConfig> => ipcRenderer.invoke('auth:disconnect', id),
+  cancelConnect: (id: string): Promise<boolean> => ipcRenderer.invoke('auth:cancel', id),
+  refreshStreamKey: (id: string): Promise<AppConfig> => ipcRenderer.invoke('auth:refresh-key', id),
+  hasClientId: (): Promise<boolean> => ipcRenderer.invoke('auth:has-client-id'),
+
+  sendChat: (platformIds: string[], text: string): Promise<SendOutcome[]> =>
+    ipcRenderer.invoke('chat:send', platformIds, text),
+
+  getStreamInfo: (id: string): Promise<StreamInfo | null> =>
+    ipcRenderer.invoke('stream-info:get', id),
+  searchCategories: (id: string, query: string): Promise<CategoryOption[]> =>
+    ipcRenderer.invoke('stream-info:search', id, query),
+  setStreamInfo: (platformIds: string[], info: StreamInfo): Promise<StreamInfoResult[]> =>
+    ipcRenderer.invoke('stream-info:set', platformIds, info),
 
   getSnapshot: (): Promise<Snapshot> => ipcRenderer.invoke('snapshot:get'),
   getLogs: (): Promise<LogEntry[]> => ipcRenderer.invoke('logs:get'),
@@ -71,6 +93,11 @@ const api = {
     const handler = (_e: unknown, publishing: boolean): void => cb(publishing)
     ipcRenderer.on('ingest-publish', handler)
     return () => ipcRenderer.removeListener('ingest-publish', handler)
+  },
+  onConfig: (cb: (c: AppConfig) => void): (() => void) => {
+    const handler = (_e: unknown, c: AppConfig): void => cb(c)
+    ipcRenderer.on('config', handler)
+    return () => ipcRenderer.removeListener('config', handler)
   },
   onWindowState: (cb: (s: { maximized: boolean }) => void): (() => void) => {
     const handler = (_e: unknown, s: { maximized: boolean }): void => cb(s)

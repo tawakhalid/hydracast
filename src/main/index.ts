@@ -9,7 +9,9 @@ import type {
   LogEntry,
   Platform,
   PlatformKind,
-  Snapshot
+  Snapshot,
+  StreamInfo,
+  StreamInfoResult
 } from '@shared/types'
 import {
   addPlatform,
@@ -24,12 +26,22 @@ import { checkDestination } from './diagnose'
 import { detectEncoders, RelayManager, resolveFfmpeg } from './relay'
 import { ChatManager } from './chat/manager'
 import { ViewerCounter } from './viewers'
+import { AuthSession } from './auth/session'
+import { TWITCH_CLIENT_ID } from './auth/device'
+import { ChatSender } from './chat/send'
+import { TwitchEventSub } from './eventsub'
+import { KickFollows } from './kickfollows'
+import { fetchStreamInfo, pushStreamInfo, searchCategories } from './streaminfo'
 
 let mainWindow: BrowserWindow | null = null
 let ingest: IngestServer
 let relays: RelayManager
 let chat: ChatManager
 let viewers: ViewerCounter
+let auth: AuthSession
+let sender: ChatSender
+let follows: TwitchEventSub
+let kickFollows: KickFollows
 let tickTimer: NodeJS.Timeout | null = null
 let sessionStartedAt: number | null = null
 const logs: LogEntry[] = []
@@ -41,7 +53,13 @@ function send(channel: string, payload: unknown): void {
 }
 
 function log(level: LogEntry['level'], scope: string, message: string): void {
-  const entry: LogEntry = { id: randomUUID(), timestamp: Date.now(), level, scope, message }
+  const entry: LogEntry = {
+    id: randomUUID(),
+    timestamp: Date.now(),
+    level,
+    scope,
+    message
+  }
   logs.push(entry)
   if (logs.length > 400) logs.shift()
   send('log', entry)
@@ -51,14 +69,13 @@ function snapshot(): Snapshot {
   const stats = relays.getStats()
   // Viewer counts follow the relays: a destination that is not live has no
   // audience to report, and polling one would only spend API quota.
-  viewers.setLive(
-    new Set(Object.keys(stats).filter((id) => stats[id].status === 'live'))
-  )
+  viewers.setLive(new Set(Object.keys(stats).filter((id) => stats[id].status === 'live')))
   return {
     ingest: ingest.getState(),
     relays: stats,
     chatStatus: chat.getStatus(),
     viewers: viewers.getCounts(),
+    auth: auth.getStatus(),
     broadcasting: relays.isAnyLive(),
     sessionStartedAt
   }
@@ -113,6 +130,32 @@ async function bootServices(): Promise<void> {
   relays = new RelayManager(config.settings)
   chat = new ChatManager(config.settings.chatBufferSize)
   viewers = new ViewerCounter()
+  auth = new AuthSession()
+  sender = new ChatSender(auth)
+  // Follows are the one audience event IRC never carries, so they come over
+  // EventSub instead - which needs the account that is already connected.
+  follows = new TwitchEventSub(async (platformId) => {
+    const account = auth.account(platformId)
+    if (!account) return null
+    const token = await auth.ensureToken(platformId)
+    return token ? { token, userId: account.userId, scopes: account.scopes } : null
+  })
+  // Kick has no equivalent socket, so its follows arrive via the broker.
+  kickFollows = new KickFollows(async (platformId) => {
+    const account = auth.account(platformId)
+    if (!account) return null
+    const token = await auth.ensureToken(platformId)
+    return token ? { token, scopes: account.scopes } : null
+  })
+
+  // Lets the viewer count spend a connected account's token instead of asking
+  // the user for app credentials of their own.
+  viewers.setTokenProvider(async (platformId) => {
+    const account = auth.account(platformId)
+    if (!account) return null
+    const token = await auth.ensureToken(platformId)
+    return token ? { clientId: TWITCH_CLIENT_ID, token, userId: account.userId } : null
+  })
 
   ingest.on('log', (level: LogEntry['level'], message: string) => log(level, 'ingest', message))
   ingest.on('publish-start', () => {
@@ -140,12 +183,52 @@ async function bootServices(): Promise<void> {
   )
   chat.on('status', () => send('snapshot', snapshot()))
 
-  viewers.on('log', (level: LogEntry['level'], message: string) =>
-    log(level, 'viewers', message)
-  )
+  viewers.on('log', (level: LogEntry['level'], message: string) => log(level, 'viewers', message))
+
+  auth.on('log', (level: LogEntry['level'], message: string) => log(level, 'auth', message))
+  auth.on('status', () => {
+    send('snapshot', snapshot())
+    // A newly connected account is what makes follower alerts possible.
+    follows.sync(getConfig().platforms)
+    kickFollows.sync(getConfig().platforms)
+  })
+
+  follows.on('log', (level: LogEntry['level'], message: string) => log(level, 'chat', message))
+  // Routed through the manager so follows share the activity history and cap.
+  follows.on('activity', (event: ActivityEvent) => chat.addActivity(event))
+
+  kickFollows.on('log', (level: LogEntry['level'], message: string) => log(level, 'chat', message))
+  kickFollows.on('activity', (event: ActivityEvent) => chat.addActivity(event))
+
+  // The session fetches these but does not own config; applying them here keeps
+  // persistence in one place.
+  auth.on('identity', (platformId: string, login: string) => {
+    const platform = getConfig().platforms.find((p) => p.id === platformId)
+    if (!platform) return
+    // Each platform keeps its channel in its own field; writing the Twitch one
+    // for every kind left a connected Kick account with its channel unset and a
+    // Twitch channel it never had.
+    const field = platform.kind === 'kick' ? 'kickChannel' : 'twitchChannel'
+    if (platform.chat[field] === login) return
+    applyPlatform(platformId, {
+      chat: { ...platform.chat, [field]: login }
+    })
+  })
+  // Kick supplies the ingest URL as well as the key, and it is per-account.
+  auth.on('ingest-url', (platformId: string, url: string) => {
+    const platform = getConfig().platforms.find((p) => p.id === platformId)
+    if (!platform || platform.url === url) return
+    applyPlatform(platformId, { url })
+  })
+  auth.on('stream-key', (platformId: string, streamKey: string) => {
+    const platform = getConfig().platforms.find((p) => p.id === platformId)
+    if (!platform || platform.streamKey === streamKey) return
+    applyPlatform(platformId, { streamKey })
+  })
 
   relays.syncPlatforms(config.platforms)
   viewers.syncPlatforms(config.platforms)
+  auth.init(config.platforms)
   relays.setSource(ingest.localSourceUrl, 0)
 
   try {
@@ -155,11 +238,24 @@ async function bootServices(): Promise<void> {
   }
 
   chat.sync(config.platforms)
+  follows.sync(config.platforms)
+  kickFollows.sync(config.platforms)
 
   tickTimer = setInterval(() => {
     ingest.poll()
     send('snapshot', snapshot())
   }, 1000)
+}
+
+/** Applies a platform patch and re-syncs every service that reads platforms. */
+function applyPlatform(id: string, patch: Partial<Platform>): void {
+  const saved = updatePlatform(id, patch)
+  relays.syncPlatforms(saved.platforms)
+  viewers.syncPlatforms(saved.platforms)
+  auth.syncPlatforms(saved.platforms)
+  follows.sync(saved.platforms)
+  kickFollows.sync(saved.platforms)
+  send('config', saved)
 }
 
 async function startBroadcast(): Promise<void> {
@@ -168,7 +264,11 @@ async function startBroadcast(): Promise<void> {
   relays.setSource(ingest.localSourceUrl, state.fps)
   relays.setSourcePublishing(state.publishing)
   if (!state.publishing) {
-    log('warn', 'relay', 'No encoder is publishing yet - relays will retry until Streamlabs connects')
+    log(
+      'warn',
+      'relay',
+      'No encoder is publishing yet - relays will retry until Streamlabs connects'
+    )
   }
   const enabled = config.platforms.filter((p) => p.enabled)
   if (!enabled.length) {
@@ -195,6 +295,9 @@ function registerIpc(): void {
     relays.setSettings(saved.settings)
     relays.syncPlatforms(saved.platforms)
     viewers.syncPlatforms(saved.platforms)
+    auth.syncPlatforms(saved.platforms)
+    follows.sync(saved.platforms)
+    kickFollows.sync(saved.platforms)
     chat.setBufferSize(saved.settings.chatBufferSize)
     chat.sync(saved.platforms)
 
@@ -221,6 +324,9 @@ function registerIpc(): void {
     const saved = updatePlatform(id, patch)
     relays.syncPlatforms(saved.platforms)
     viewers.syncPlatforms(saved.platforms)
+    auth.syncPlatforms(saved.platforms)
+    follows.sync(saved.platforms)
+    kickFollows.sync(saved.platforms)
     const platform = saved.platforms.find((p) => p.id === id)
     // Only rebuild the chat connector when its identity actually changed -
     // toggling a destination or nudging its bitrate must not drop chat.
@@ -236,6 +342,9 @@ function registerIpc(): void {
     const saved = addPlatform(kind)
     relays.syncPlatforms(saved.platforms)
     viewers.syncPlatforms(saved.platforms)
+    auth.syncPlatforms(saved.platforms)
+    follows.sync(saved.platforms)
+    kickFollows.sync(saved.platforms)
     return saved
   })
 
@@ -245,6 +354,9 @@ function registerIpc(): void {
     const saved = removePlatform(id)
     relays.syncPlatforms(saved.platforms)
     viewers.syncPlatforms(saved.platforms)
+    auth.syncPlatforms(saved.platforms)
+    follows.sync(saved.platforms)
+    kickFollows.sync(saved.platforms)
     return saved
   })
 
@@ -263,6 +375,113 @@ function registerIpc(): void {
   ipcMain.handle('relay:stop', (_e, id: string) => relays.stop(id))
   ipcMain.handle('broadcast:start', () => startBroadcast())
   ipcMain.handle('broadcast:stop', () => stopBroadcast())
+
+  ipcMain.handle('auth:connect', async (_e, id: string) => {
+    await auth.connect(id)
+    return auth.getStatus()
+  })
+  ipcMain.handle('auth:disconnect', async (_e, id: string) => {
+    await auth.disconnect(id)
+    return getConfig()
+  })
+  ipcMain.handle('auth:cancel', (_e, id: string) => {
+    auth.cancel(id)
+    return true
+  })
+  ipcMain.handle('auth:refresh-key', async (_e, id: string) => {
+    await auth.pullStreamKey(id)
+    return getConfig()
+  })
+  ipcMain.handle('auth:has-client-id', () => !!TWITCH_CLIENT_ID)
+
+  /**
+   * Stream title and category.
+   *
+   * Reads come from the platform rather than from config, because the streamer
+   * may have changed either from the platform's own dashboard since Hydracast
+   * last looked; showing a stale local copy would invite overwriting it.
+   */
+  ipcMain.handle('stream-info:get', async (_e, id: string) => {
+    const platform = getConfig().platforms.find((p) => p.id === id)
+    const account = auth.account(id)
+    if (!platform || !account) return null
+    const token = await auth.ensureToken(id)
+    if (!token) return null
+    try {
+      return await fetchStreamInfo(platform, token, account.userId)
+    } catch (err) {
+      log(
+        'warn',
+        'auth',
+        `${platform.name}: could not read stream info - ${(err as Error).message}`
+      )
+      return null
+    }
+  })
+
+  ipcMain.handle('stream-info:search', async (_e, id: string, query: string) => {
+    const platform = getConfig().platforms.find((p) => p.id === id)
+    const account = auth.account(id)
+    if (!platform || !account) return []
+    const token = await auth.ensureToken(id)
+    if (!token) return []
+    try {
+      return await searchCategories(platform, token, query)
+    } catch {
+      // A failed lookup is an empty picker, not an error worth a log line per
+      // keystroke.
+      return []
+    }
+  })
+
+  /** Applies one title/category to several destinations at once. */
+  ipcMain.handle(
+    'stream-info:set',
+    async (_e, platformIds: string[], info: StreamInfo): Promise<StreamInfoResult[]> => {
+      const platforms = getConfig().platforms.filter((p) => platformIds.includes(p.id))
+      const results = await Promise.all(
+        platforms.map(async (platform) => {
+          const account = auth.account(platform.id)
+          if (!account) {
+            return {
+              platformId: platform.id,
+              ok: false,
+              detail: `Connect your ${platform.name} account first`
+            }
+          }
+          const token = await auth.ensureToken(platform.id)
+          if (!token) {
+            return { platformId: platform.id, ok: false, detail: 'Session expired - connect again' }
+          }
+          return pushStreamInfo(platform, token, account.userId, account.scopes, info)
+        })
+      )
+      for (const result of results) {
+        const platform = platforms.find((p) => p.id === result.platformId)
+        if (!platform) continue
+        if (result.ok) log('success', 'auth', `${platform.name}: stream info updated`)
+        else log('warn', 'auth', `${platform.name}: ${result.detail ?? 'update failed'}`)
+      }
+      return results
+    }
+  )
+
+  /**
+   * Sends one composed message to the destinations the renderer resolved. It
+   * passes ids rather than a route so the routing rule lives in one place -
+   * parseCompose in the shared types - and is unit tested there.
+   */
+  ipcMain.handle('chat:send', async (_e, platformIds: string[], text: string) => {
+    const platforms = getConfig().platforms.filter((p) => platformIds.includes(p.id))
+    const outcomes = await Promise.all(platforms.map((p) => sender.send(p, text)))
+    // Sent messages are not echoed locally: they arrive back over the platform's
+    // own chat connection a moment later, and adding an echo showed each one twice.
+    for (const outcome of outcomes.filter((o) => !o.ok)) {
+      const platform = platforms.find((p) => p.id === outcome.platformId)
+      if (platform) log('warn', 'chat', `${platform.name}: ${outcome.detail ?? 'send failed'}`)
+    }
+    return outcomes
+  })
 
   ipcMain.handle('snapshot:get', () => snapshot())
   ipcMain.handle('logs:get', () => logs)
@@ -345,6 +564,7 @@ app.on('window-all-closed', () => {
 app.on('before-quit', async () => {
   if (tickTimer) clearInterval(tickTimer)
   chat?.dispose()
+  auth?.dispose()
   viewers?.dispose()
   relays?.dispose()
   await ingest?.stop()

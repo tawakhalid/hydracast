@@ -50,6 +50,8 @@ import ActivityPane from './components/ActivityPane'
 import LayoutMenu from './components/LayoutMenu'
 import PanelFrame from './components/PanelFrame'
 import ChatPane from './components/ChatPane'
+import ConnectModal from './components/ConnectModal'
+import ReconnectBanner from './components/ReconnectBanner'
 import SettingsModal from './components/SettingsModal'
 
 type View = 'broadcast' | 'logs'
@@ -74,6 +76,7 @@ const emptySnapshot: Snapshot = {
   relays: {},
   chatStatus: {},
   viewers: {},
+  auth: {},
   broadcasting: false,
   sessionStartedAt: null
 }
@@ -92,9 +95,7 @@ export default function App() {
   const [logs, setLogs] = useState<LogEntry[]>([])
   const [activity, setActivity] = useState<ActivityEvent[]>([])
   const [editing, setEditing] = useState(false)
-  const [drag, setDrag] = useState<{ id: PanelId; region: PanelRegion; index: number } | null>(
-    null
-  )
+  const [drag, setDrag] = useState<{ id: PanelId; region: PanelRegion; index: number } | null>(null)
   const regionRefs = useRef<Record<PanelRegion, HTMLDivElement | null>>({ left: null, right: null })
   const panelRefs = useRef(new Map<PanelId, HTMLDivElement>())
   const workspaceRef = useRef<HTMLDivElement>(null)
@@ -109,6 +110,12 @@ export default function App() {
   const [maximized, setMaximized] = useState(false)
   const [toasts, setToasts] = useState<{ id: number; text: string; kind: 'ok' | 'err' }[]>([])
   const [unreadChat, setUnreadChat] = useState(0)
+  // The destination whose login is on screen, and whichever auth action is in
+  // flight so its buttons can disable without blocking the rest of the UI.
+  const [connecting, setConnecting] = useState<string | null>(null)
+  const [authBusy, setAuthBusy] = useState<string | null>(null)
+  /** Ids the user has waved away this session, so the banner asks only once. */
+  const [dismissedStale, setDismissedStale] = useState<Set<string>>(new Set())
   const toastId = useRef(0)
 
   const toast = useCallback((text: string, kind: 'ok' | 'err' = 'ok') => {
@@ -136,9 +143,13 @@ export default function App() {
     const offChat = api.onChatMessage((m) => setMessages((prev) => [...prev.slice(-499), m]))
     const offLog = api.onLog((l) => setLogs((prev) => [...prev.slice(-399), l]))
     const offActivity = api.onActivity((e) => setActivity((prev) => [...prev.slice(-399), e]))
+    const offConfig = api.onConfig(setConfig)
     const offWindow = api.onWindowState((s) => setMaximized(s.maximized))
     const offPublish = api.onIngestPublish((publishing) =>
-      toast(publishing ? 'Streamlabs connected' : 'Streamlabs disconnected', publishing ? 'ok' : 'err')
+      toast(
+        publishing ? 'Streamlabs connected' : 'Streamlabs disconnected',
+        publishing ? 'ok' : 'err'
+      )
     )
 
     return () => {
@@ -146,6 +157,7 @@ export default function App() {
       offChat()
       offLog()
       offActivity()
+      offConfig()
       offWindow()
       offPublish()
     }
@@ -165,9 +177,24 @@ export default function App() {
     if (config) document.documentElement.dataset.theme = config.settings.theme
   }, [config?.settings.theme])
 
+  // The device flow finishes in the main process; close the modal when the
+  // account it was waiting for actually arrives.
+  useEffect(() => {
+    if (!connecting) return
+    const state = snapshot.auth[connecting]?.state
+    if (state === 'connected') {
+      const name = snapshot.auth[connecting]?.account?.displayName
+      setConnecting(null)
+      toast(name ? `Connected as ${name}` : 'Account connected')
+    }
+  }, [snapshot.auth, connecting, toast])
+
   /* ---------------- actions ---------------- */
 
-  const patchPlatform = async (id: string, patch: Parameters<typeof window.hydracast.updatePlatform>[1]) => {
+  const patchPlatform = async (
+    id: string,
+    patch: Parameters<typeof window.hydracast.updatePlatform>[1]
+  ) => {
     setConfig(await window.hydracast.updatePlatform(id, patch))
   }
 
@@ -188,6 +215,59 @@ export default function App() {
     setConfig(await window.hydracast.removePlatform(id))
     toast('Destination removed')
   }
+
+  /**
+   * Starts a login. The main process drives the device flow and reports through
+   * the snapshot, so this only has to open the modal and wait.
+   */
+  /**
+   * Logins that lapsed while the app was closed, minus any the user waved away.
+   * Keyed off `needsReconnect` rather than the error state, so an abandoned
+   * connect attempt never raises the banner.
+   */
+  const staleLogins = useMemo(
+    () =>
+      (config?.platforms ?? []).filter(
+        (p) => snapshot.auth[p.id]?.needsReconnect && !dismissedStale.has(p.id)
+      ),
+    [config, snapshot.auth, dismissedStale]
+  )
+
+  const connectAccount = async (id: string) => {
+    setConnecting(id)
+    setAuthBusy(id)
+    try {
+      await window.hydracast.connectAccount(id)
+    } finally {
+      setAuthBusy(null)
+    }
+  }
+
+  const disconnectAccount = async (id: string) => {
+    setAuthBusy(id)
+    try {
+      setConfig(await window.hydracast.disconnectAccount(id))
+      toast('Account disconnected')
+    } finally {
+      setAuthBusy(null)
+    }
+  }
+
+  const refreshStreamKey = async (id: string) => {
+    setAuthBusy(id)
+    try {
+      setConfig(await window.hydracast.refreshStreamKey(id))
+      toast('Stream key refreshed')
+    } finally {
+      setAuthBusy(null)
+    }
+  }
+
+  /** Stable identity so the memoised composer is not re-rendered by the tick. */
+  const sendChat = useCallback(
+    (ids: string[], text: string) => window.hydracast.sendChat(ids, text),
+    []
+  )
 
   const copy = (text: string, label: string) => {
     void navigator.clipboard.writeText(text)
@@ -471,6 +551,8 @@ export default function App() {
           messages={messages}
           platforms={platforms}
           chatStatus={snapshot.chatStatus}
+          auth={snapshot.auth}
+          onSend={sendChat}
           fontSize={layout.chatFontSize}
           onFontSize={(chatFontSize) => editLayout({ ...layout, chatFontSize })}
           onClear={() => {
@@ -691,9 +773,7 @@ export default function App() {
                 <span className="k">
                   <EyeIcon size={11} /> Viewers
                 </span>
-                <span className="v">
-                  {viewerTotal >= 0 ? viewerTotal.toLocaleString() : '--'}
-                </span>
+                <span className="v">{viewerTotal >= 0 ? viewerTotal.toLocaleString() : '--'}</span>
               </div>
               <div className="stat">
                 <span className="k">Live</span>
@@ -731,13 +811,24 @@ export default function App() {
             )}
           </div>
 
+          <AnimatePresence>
+            {staleLogins.length > 0 && (
+              <ReconnectBanner
+                stale={staleLogins}
+                auth={snapshot.auth}
+                busy={authBusy}
+                onReconnect={(id) => void connectAccount(id)}
+                onDismiss={() =>
+                  setDismissedStale((prev) => new Set([...prev, ...staleLogins.map((p) => p.id)]))
+                }
+              />
+            )}
+          </AnimatePresence>
+
           {/* views */}
           {view === 'broadcast' && (
             <div className="workspace" ref={workspaceRef}>
-              <div
-                className="workspace-left"
-                ref={(el) => (regionRefs.current.left = el)}
-              >
+              <div className="workspace-left" ref={(el) => (regionRefs.current.left = el)}>
                 {withDropLine(leftPanels, 'left')}
               </div>
 
@@ -842,6 +933,26 @@ export default function App() {
             onSave={(next) => void saveConfig(next)}
             onAddPlatform={(kind) => void addPlatform(kind)}
             onRemovePlatform={(id) => void removePlatform(id)}
+            auth={snapshot.auth}
+            authBusy={authBusy}
+            onConnect={(id) => void connectAccount(id)}
+            onDisconnect={(id) => void disconnectAccount(id)}
+            onRefreshKey={(id) => void refreshStreamKey(id)}
+          />
+        )}
+      </AnimatePresence>
+
+      {/* ---------------- account login ---------------- */}
+      <AnimatePresence>
+        {connecting && platforms.some((p) => p.id === connecting) && (
+          <ConnectModal
+            platform={platforms.find((p) => p.id === connecting)!}
+            status={snapshot.auth[connecting]}
+            onCancel={() => {
+              void window.hydracast.cancelConnect(connecting)
+              setConnecting(null)
+            }}
+            onCopied={(code) => copy(code, 'Code')}
           />
         )}
       </AnimatePresence>
@@ -858,7 +969,9 @@ export default function App() {
               exit={{ opacity: 0, x: 40, scale: 0.95 }}
               transition={{ type: 'spring', stiffness: 380, damping: 30 }}
             >
-              <span style={{ color: t.kind === 'ok' ? 'var(--ok)' : 'var(--warn)', display: 'grid' }}>
+              <span
+                style={{ color: t.kind === 'ok' ? 'var(--ok)' : 'var(--warn)', display: 'grid' }}
+              >
                 {t.kind === 'ok' ? <CheckIcon size={15} /> : <AlertIcon size={15} />}
               </span>
               {t.text}
