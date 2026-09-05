@@ -1,6 +1,7 @@
 import http from 'node:http'
 import crypto from 'node:crypto'
 import { browserFetch } from '../http'
+import { BROKER_BASE, brokerPost, RefreshError } from './broker'
 import type { TokenSet } from './device'
 
 /**
@@ -31,9 +32,10 @@ export const KICK_CLIENT_ID = '01M1RG56QX008VJH25R1PS55PE'
  * Where the broker lives.
  *
  * Not a secret: it accepts only PKCE exchanges pinned to the loopback redirect
- * below, so knowing the URL grants nothing on its own.
+ * below, so knowing the URL grants nothing on its own. Re-exported because the
+ * follow relay reaches the same Worker on a different path.
  */
-export const BROKER_BASE = 'https://hydracast-broker.tawakhalid.workers.dev'
+export { BROKER_BASE }
 
 /**
  * A fixed port, because Kick matches the redirect URI exactly against the one
@@ -209,7 +211,9 @@ export function readTokenSet(body: unknown, now = Date.now()): TokenSet {
   const b = rec(body)
   const token = str(b['access_token'])
   if (!token) {
-    throw new Error(str(b['detail']) || str(b['error']) || 'Kick rejected the login')
+    // Not retryable: a reply that parsed but carried no token is Kick's
+    // verdict on the credential, not a hiccup on the way there.
+    throw new RefreshError(str(b['detail']) || str(b['error']) || 'Kick rejected the login')
   }
   const secs = Number(b['expires_in'])
   const refreshSecs = Number(b['refresh_expires_in'])
@@ -225,21 +229,7 @@ export function readTokenSet(body: unknown, now = Date.now()): TokenSet {
 }
 
 async function callBroker(path: string, payload: Record<string, string>): Promise<TokenSet> {
-  if (!BROKER_BASE) {
-    throw new Error('Hydracast was built without a Kick broker URL - see main/auth/kick.ts')
-  }
-  const res = await browserFetch(`${BROKER_BASE}${path}`, {
-    method: 'POST',
-    headers: { 'content-type': 'application/json', accept: 'application/json' },
-    body: JSON.stringify(payload)
-  })
-  const text = await res.text()
-  let body: unknown = {}
-  try {
-    body = JSON.parse(text)
-  } catch {
-    throw new Error(`Broker replied HTTP ${res.status}`)
-  }
+  const { body } = await brokerPost(path, payload)
   return readTokenSet(body)
 }
 

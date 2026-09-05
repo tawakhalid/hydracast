@@ -12,6 +12,11 @@
  * authorization code and the verifier. We add the secret, forward to Kick, and
  * pass the reply straight back.
  *
+ * Twitch arrives here for one call only. Its device grant needs no secret, so
+ * the app logs in by itself, but the refresh grant refuses a Confidential
+ * client that omits one - which made every Twitch session die four hours after
+ * it started. Only the refresh is served here; the login stays in the app.
+ *
  * This is a relay, not a store. Tokens travel through it and are never logged,
  * cached, or persisted - the only long-lived secret here is the app's own.
  */
@@ -23,6 +28,8 @@ export { KickChannel }
 export interface Env {
   KICK_CLIENT_ID: string
   KICK_CLIENT_SECRET: string
+  TWITCH_CLIENT_ID: string
+  TWITCH_CLIENT_SECRET: string
   /** One instance per Kick channel; holds recent follows and live sockets. */
   KICK_CHANNELS: DurableObjectNamespace
 }
@@ -53,6 +60,7 @@ async function broadcasterFor(token: string): Promise<string | null> {
 }
 
 const KICK_TOKEN_URL = 'https://id.kick.com/oauth/token'
+const TWITCH_TOKEN_URL = 'https://id.twitch.tv/oauth2/token'
 
 /** The loopback address the desktop app listens on. Anything else is refused. */
 const ALLOWED_REDIRECTS = new Set(['http://localhost:8788/kick/callback'])
@@ -83,13 +91,18 @@ async function readBody(req: Request): Promise<Record<string, unknown> | null> {
 const str = (v: unknown): string => (typeof v === 'string' ? v : '')
 
 /**
- * Forwards a grant to Kick with the secret attached.
+ * Forwards a grant upstream with the secret attached.
  *
  * The upstream status is passed through unchanged so the app can tell an
- * expired code from a revoked one instead of seeing a flat failure.
+ * expired code from a revoked one instead of seeing a flat failure. The token
+ * in the reply is relayed byte for byte and never read, logged, or stored.
  */
-async function forward(env: Env, params: Record<string, string>): Promise<Response> {
-  const res = await fetch(KICK_TOKEN_URL, {
+async function forward(
+  tokenUrl: string,
+  credentials: { clientId: string; clientSecret: string },
+  params: Record<string, string>
+): Promise<Response> {
+  const res = await fetch(tokenUrl, {
     method: 'POST',
     headers: {
       'content-type': 'application/x-www-form-urlencoded',
@@ -97,16 +110,26 @@ async function forward(env: Env, params: Record<string, string>): Promise<Respon
     },
     body: new URLSearchParams({
       ...params,
-      client_id: env.KICK_CLIENT_ID,
-      client_secret: env.KICK_CLIENT_SECRET
+      client_id: credentials.clientId,
+      client_secret: credentials.clientSecret
     })
   })
 
   const text = await res.text()
   if (!res.ok) {
-    // Kick answers errors with an empty body, so invent a usable one rather
-    // than handing the app a blank failure it cannot explain to the user.
-    return json({ error: 'kick_rejected', status: res.status, detail: text || null }, res.status)
+    // Kick answers errors with an empty body and Twitch answers with a JSON
+    // one. Both end up quoted in a message the user reads, so unwrap Twitch's
+    // wording rather than showing them a serialised object, and invent
+    // something for Kick rather than handing over a blank failure.
+    let detail: string | null = text || null
+    try {
+      const upstream = JSON.parse(text) as Record<string, unknown>
+      const message = upstream['message'] ?? upstream['error_description'] ?? upstream['error']
+      if (typeof message === 'string' && message) detail = message
+    } catch {
+      /* not JSON; the raw text, or null, is the best available */
+    }
+    return json({ error: 'upstream_rejected', status: res.status, detail }, res.status)
   }
   return new Response(text, {
     status: res.status,
@@ -179,12 +202,35 @@ export default {
     }
 
     if (req.method !== 'POST') return json({ error: 'method_not_allowed' }, 405)
-    if (!env.KICK_CLIENT_ID || !env.KICK_CLIENT_SECRET) {
-      return json({ error: 'broker_not_configured' }, 500)
-    }
 
     const body = await readBody(req)
     if (!body) return json({ error: 'bad_request' }, 400)
+
+    /**
+     * Twitch's refresh, and the only Twitch grant served here.
+     *
+     * There is nothing to pin the way the Kick redirect is pinned: a refresh
+     * token is itself the credential, so anyone able to call this usefully
+     * already holds what it would buy them. What this must not become is a way
+     * to spend the secret on anything else, which is why the grant type is
+     * fixed here rather than taken from the request.
+     */
+    if (pathname === '/twitch/refresh') {
+      if (!env.TWITCH_CLIENT_ID || !env.TWITCH_CLIENT_SECRET) {
+        return json({ error: 'broker_not_configured', detail: 'twitch' }, 500)
+      }
+      const refresh = str(body['refresh_token'])
+      if (!refresh) return json({ error: 'missing_refresh_token' }, 400)
+      return forward(
+        TWITCH_TOKEN_URL,
+        { clientId: env.TWITCH_CLIENT_ID, clientSecret: env.TWITCH_CLIENT_SECRET },
+        { grant_type: 'refresh_token', refresh_token: refresh }
+      )
+    }
+
+    if (!env.KICK_CLIENT_ID || !env.KICK_CLIENT_SECRET) {
+      return json({ error: 'broker_not_configured', detail: 'kick' }, 500)
+    }
 
     if (pathname === '/kick/token') {
       const code = str(body['code'])
@@ -195,21 +241,26 @@ export default {
       // that was started against somebody else's listener.
       if (!ALLOWED_REDIRECTS.has(redirect)) return json({ error: 'redirect_not_allowed' }, 400)
 
-      return forward(env, {
-        grant_type: 'authorization_code',
-        code,
-        code_verifier: verifier,
-        redirect_uri: redirect
-      })
+      return forward(
+        KICK_TOKEN_URL,
+        { clientId: env.KICK_CLIENT_ID, clientSecret: env.KICK_CLIENT_SECRET },
+        {
+          grant_type: 'authorization_code',
+          code,
+          code_verifier: verifier,
+          redirect_uri: redirect
+        }
+      )
     }
 
     if (pathname === '/kick/refresh') {
       const refresh = str(body['refresh_token'])
       if (!refresh) return json({ error: 'missing_refresh_token' }, 400)
-      return forward(env, {
-        grant_type: 'refresh_token',
-        refresh_token: refresh
-      })
+      return forward(
+        KICK_TOKEN_URL,
+        { clientId: env.KICK_CLIENT_ID, clientSecret: env.KICK_CLIENT_SECRET },
+        { grant_type: 'refresh_token', refresh_token: refresh }
+      )
     }
 
     return json({ error: 'not_found' }, 404)

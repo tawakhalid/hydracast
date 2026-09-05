@@ -4,6 +4,7 @@ import type { AuthAccount, AuthStatus, LogEntry, Platform } from '@shared/types'
 import { supportsAuth } from '@shared/types'
 import { BROWSER_HEADERS, browserFetch } from '../http'
 import { TokenStore, type StoredToken } from './store'
+import { RefreshError } from './broker'
 import {
   pollDeviceFlow,
   refreshTokens,
@@ -432,7 +433,17 @@ export class AuthSession extends EventEmitter {
       return next.accessToken
     } catch (err) {
       const name = this.platforms.get(platformId)?.name ?? 'Account'
-      // A 30-day-old refresh token is gone for good; say so instead of retrying.
+
+      // Being unable to ask is not the same as being told no. A refusal ends
+      // the session; an unreachable network says nothing about the token, and
+      // discarding a good login over a Wi-Fi drop would force a login the user
+      // never needed. The stored token survives and the next call tries again.
+      if (err instanceof RefreshError && err.retryable) {
+        this.log('warn', `${name}: could not renew the login just now - ${err.message}`)
+        return ''
+      }
+
+      // Refused: the refresh token is spent or revoked and no retry will help.
       this.store.remove(platformId)
       this.status.set(platformId, {
         platformId,

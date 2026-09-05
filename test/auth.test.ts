@@ -7,7 +7,8 @@
  * "the user has not approved this yet" with an HTTP 400, so a naive reading
  * turns a perfectly normal poll into a fatal error and the login never lands.
  */
-import { deadline, readPoll } from '../src/main/auth/device'
+import { deadline, readPoll, readRefresh } from '../src/main/auth/device'
+import { RefreshError } from '../src/main/auth/broker'
 import { needsRefresh, readIdentity, readStreamKey } from '../src/main/auth/session'
 import { readSendResult } from '../src/main/chat/send'
 import { parseCompose } from '../src/shared/types'
@@ -163,6 +164,61 @@ check(
   'whitespace before the message is trimmed',
   parseCompose('/twitch    hi').text === 'hi'
 )
+
+// --------------------------------------------------------------- refresh ---
+// A refresh that fails is not always a session that ended. Telling the two
+// apart is the whole reason RefreshError exists: v1.2.1 deleted the stored
+// login on any failure at all, so a Wi-Fi drop logged the user out.
+
+const renewed = readRefresh(
+  { access_token: 'at-2', refresh_token: 'rt-2', expires_in: 14400, scope: ['a', 'b'] },
+  true,
+  'rt-1',
+  1_000_000
+)
+check('a refresh yields the new access token', renewed.accessToken === 'at-2')
+check('a refresh yields the new refresh token', renewed.refreshToken === 'rt-2')
+check('a refresh reads the scopes', renewed.scopes.join(',') === 'a,b', renewed.scopes.join(','))
+check(
+  'a refresh turns expires_in into a deadline',
+  renewed.expiresAt === 1_000_000 + 14400 * 1000,
+  String(renewed.expiresAt)
+)
+
+// Twitch always sends one, but dropping the old token because a reply omitted
+// it would strand the account with nothing left to refresh from.
+const kept = readRefresh({ access_token: 'at-3' }, true, 'rt-1')
+check('an omitted refresh token falls back to the old one', kept.refreshToken === 'rt-1')
+
+const refusal = (body: unknown, ok = false): RefreshError => {
+  try {
+    readRefresh(body, ok, 'rt-1')
+  } catch (err) {
+    return err as RefreshError
+  }
+  throw new Error('readRefresh should have thrown')
+}
+
+check('a refusal throws RefreshError', refusal({ message: 'Invalid refresh token' }) instanceof RefreshError)
+check(
+  'a refusal is not retryable',
+  refusal({ message: 'Invalid refresh token' }).retryable === false
+)
+check(
+  "a refusal carries Twitch's own wording",
+  refusal({ message: 'Invalid refresh token' }).message === 'Invalid refresh token'
+)
+check(
+  "a refusal carries the broker's detail when Twitch sent no message",
+  refusal({ error: 'upstream_rejected', detail: 'missing client secret' }).message ===
+    'missing client secret'
+)
+// HTTP 200 with no token is still a refusal; treating it as success would
+// store an empty access token and fail every later call instead.
+check('a 200 with no token is a refusal', refusal({}, true) instanceof RefreshError)
+
+check('a RefreshError defaults to fatal', new RefreshError('x').retryable === false)
+check('a RefreshError can be marked retryable', new RefreshError('x', true).retryable)
 
 console.log(failures ? `\n${failures} check(s) failed` : '\nAll auth checks passed')
 process.exit(failures ? 1 : 0)

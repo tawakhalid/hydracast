@@ -1,4 +1,5 @@
 import { browserFetch } from '../http'
+import { brokerPost, RefreshError } from './broker'
 
 /**
  * Twitch Device Code Flow.
@@ -12,7 +13,14 @@ import { browserFetch } from '../http'
  * Twitch's docs say a *Public* client is restricted to this flow, which reads as
  * though the two client types were mutually exclusive. They are not: a
  * Confidential registration was verified to accept the device flow too, which is
- * why no second app registration was needed. The secret simply goes unused.
+ * why no second app registration was needed.
+ *
+ * The secret is not unused, though, and believing it was cost a release. The
+ * device grant ignores it; the *refresh* grant does not, and answers a
+ * Confidential client that omits it with `400 missing client secret` before it
+ * even reads the refresh token. Logging in therefore worked perfectly while
+ * every refresh failed, so a session died silently four hours in. The refresh
+ * is the one call in this file that goes through the broker for that reason.
  */
 
 /**
@@ -199,31 +207,52 @@ export async function pollDeviceFlow(
 }
 
 /**
- * Exchanges a refresh token for a new access token.
+ * Reads a refresh reply, whoever relayed it.
  *
- * The reply carries a *new* refresh token and invalidates the one passed in, so
- * every caller must persist what comes back.
+ * Separated from the request so the failure shapes can be tested without a
+ * network, and so the broker's own errors are told apart from Twitch's: a
+ * broker that could not be reached has passed no judgement on the token, and
+ * deleting a working login over it is the wrong answer.
  */
-export async function refreshTokens(clientId: string, refreshToken: string): Promise<TokenSet> {
-  const { body, ok } = await postForm(TOKEN_URL, {
-    client_id: clientId,
-    grant_type: 'refresh_token',
-    refresh_token: refreshToken
-  })
+export function readRefresh(
+  body: unknown,
+  ok: boolean,
+  previousRefreshToken: string,
+  now = Date.now()
+): TokenSet {
   const b = rec(body)
   const token = str(b['access_token'])
   if (!ok || !token) {
-    throw new Error(str(b['message']) || 'Twitch rejected the refresh token')
+    throw new RefreshError(
+      str(b['message']) || str(b['detail']) || str(b['error']) || 'Twitch rejected the refresh token'
+    )
   }
   const scope = b['scope']
   return {
     accessToken: token,
     // Twitch returns a fresh single-use refresh token; fall back to the old one
     // only if it omits it, which would otherwise strand the account.
-    refreshToken: str(b['refresh_token']) || refreshToken,
-    expiresAt: deadline(b['expires_in'], 4 * 3600),
+    refreshToken: str(b['refresh_token']) || previousRefreshToken,
+    expiresAt: deadline(b['expires_in'], 4 * 3600, now),
     scopes: Array.isArray(scope) ? scope.map(str).filter(Boolean) : TWITCH_SCOPES
   }
+}
+
+/**
+ * Exchanges a refresh token for a new access token.
+ *
+ * Goes through the broker, unlike every other call here, because Twitch will
+ * not refresh for a Confidential client without the client secret - see the
+ * note at the top of this file. The client id is passed for symmetry with the
+ * rest of the module but the broker supplies its own; the app has no secret to
+ * send and is not trusted with one.
+ *
+ * The reply carries a *new* refresh token and invalidates the one passed in, so
+ * every caller must persist what comes back.
+ */
+export async function refreshTokens(_clientId: string, refreshToken: string): Promise<TokenSet> {
+  const { body, ok } = await brokerPost('/twitch/refresh', { refresh_token: refreshToken })
+  return readRefresh(body, ok, refreshToken)
 }
 
 /** Best-effort revocation, so Disconnect actually ends Twitch's session too. */
