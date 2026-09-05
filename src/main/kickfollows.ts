@@ -82,6 +82,9 @@ export function toActivity(follow: BrokerFollow, platformId: string): ActivityEv
   }
 }
 
+/** What came of asking Kick to send this channel's follows. */
+type SubscribeOutcome = 'ok' | 'needs-reconnect' | 'failed'
+
 interface Connection {
   socket: WebSocket
   retryTimer: NodeJS.Timeout | null
@@ -96,6 +99,8 @@ export class KickFollows extends EventEmitter {
   private connections = new Map<string, Connection>()
   private wanted = new Map<string, Platform>()
   private subscribed = new Set<string>()
+  /** Accounts already told to reconnect, so a retry loop says it once. */
+  private warned = new Set<string>()
 
   constructor(tokens: KickTokenProvider) {
     super()
@@ -123,12 +128,26 @@ export class KickFollows extends EventEmitter {
 
     const auth = await this.tokens(platformId)
     if (!auth) return
-    if (!auth.scopes.includes(KICK_EVENTS_SCOPE)) {
-      this.emit('log', 'info', `${platform.name}: reconnect the account to enable follower alerts`)
+
+    // The stored scope list is a hint, not the authority. It was a hard gate
+    // once, and a token saved before `events:subscribe` joined the list made
+    // this return before subscribing or connecting - so the feature was dead
+    // and the only trace was one info line among the relay chatter. Kick gets
+    // asked either way now, and Kick's answer decides.
+    const outcome = await this.subscribe(platformId, auth.token)
+    if (outcome === 'needs-reconnect') {
+      // Said once per connection, and loudly: this is the one failure here
+      // that the user alone can clear, and it is invisible until they do.
+      if (!this.warned.has(platformId)) {
+        this.warned.add(platformId)
+        this.emit(
+          'log',
+          'warn',
+          `${platform.name}: disconnect and reconnect this account to turn on follower alerts`
+        )
+      }
       return
     }
-
-    await this.subscribe(platformId, auth.token)
 
     const previous = this.connections.get(platformId)
     const url = `${BROKER_BASE.replace(/^http/, 'ws')}/kick/stream?since=${previous?.since ?? 0}`
@@ -184,11 +203,14 @@ export class KickFollows extends EventEmitter {
    * tracked anyway so a flapping socket does not re-post it on every retry.
    * The callback URL is not sent here: it is configured on the app itself in
    * Kick's developer portal, which is why the broker URL has to be set there.
+   *
+   * Reports whether the account needs re-authorising, because that is the one
+   * outcome the user has to act on and it cannot be recovered from by retrying.
    */
-  private async subscribe(platformId: string, token: string): Promise<void> {
-    if (this.subscribed.has(platformId)) return
+  private async subscribe(platformId: string, token: string): Promise<SubscribeOutcome> {
+    if (this.subscribed.has(platformId)) return 'ok'
     const platform = this.wanted.get(platformId)
-    if (!platform) return
+    if (!platform) return 'failed'
     try {
       const res = await browserFetch(SUBSCRIPTIONS_URL, {
         method: 'POST',
@@ -204,16 +226,28 @@ export class KickFollows extends EventEmitter {
       })
       if (res.ok) {
         this.subscribed.add(platformId)
-        return
+        this.warned.delete(platformId)
+        return 'ok'
       }
-      const body = rec(JSON.parse((await res.text()) || '{}'))
+      // 401 is an expired token, which refreshes on its own; 403 is the token
+      // being genuinely short this scope, which only a fresh consent fixes.
+      if (res.status === 403) return 'needs-reconnect'
+
+      let body: Record<string, unknown> = {}
+      try {
+        body = rec(JSON.parse((await res.text()) || '{}'))
+      } catch {
+        /* Kick sometimes answers with nothing at all; the status carries it */
+      }
       this.emit(
         'log',
         'warn',
         `${platform.name}: could not subscribe to follows - ${str(body['message']) || `HTTP ${res.status}`}`
       )
+      return 'failed'
     } catch (err) {
       this.emit('log', 'warn', `${platform.name} follows: ${(err as Error).message}`)
+      return 'failed'
     }
   }
 
@@ -225,6 +259,7 @@ export class KickFollows extends EventEmitter {
     conn.socket.close()
     this.connections.delete(platformId)
     this.subscribed.delete(platformId)
+    this.warned.delete(platformId)
   }
 
   stop(): void {
