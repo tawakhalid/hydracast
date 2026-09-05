@@ -266,7 +266,7 @@ export default function ChatPane({
         )}
       </AnimatePresence>
 
-      <ChatSend targets={sendTargets} onSend={onSend} />
+      <ChatSend targets={sendTargets} onSend={onSend} onClear={onClear} />
 
       <div className="chat-foot">
         <span className={`dot ${connectedCount ? 'ok' : ''}`} />

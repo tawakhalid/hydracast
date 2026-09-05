@@ -220,5 +220,56 @@ check('a 200 with no token is a refusal', refusal({}, true) instanceof RefreshEr
 check('a RefreshError defaults to fatal', new RefreshError('x').retryable === false)
 check('a RefreshError can be marked retryable', new RefreshError('x', true).retryable)
 
+// ------------------------------------------------------- compose commands ---
+// The stake here is that a command must never leave as a chat message. Every
+// check below is really the same check: does this line get acted on, or typed
+// into someone's chat?
+
+const clear = parseCompose('/clear')
+check('/clear is a command', clear.command?.name === 'clear')
+check('/clear is not literal text', !clear.literalSlash)
+check('/clear never routes to a platform', clear.route === null)
+
+const title = parseCompose('/title Ranked until I win')
+check('/title is a command', title.command?.name === 'title')
+check(
+  '/title carries the whole rest of the line',
+  title.command?.name === 'title' && title.command.value === 'Ranked until I win',
+  title.command?.name === 'title' ? title.command.value : ''
+)
+
+const game = parseCompose('/game Rust')
+check('/game is a command', game.command?.name === 'game')
+check(
+  '/game carries the name to look up',
+  game.command?.name === 'game' && game.command.value === 'Rust'
+)
+
+// A game with a space in it is the common case, not the exception.
+const spaced = parseCompose('/game Old School RuneScape')
+check(
+  'a multi-word game survives intact',
+  spaced.command?.name === 'game' && spaced.command.value === 'Old School RuneScape',
+  spaced.command?.name === 'game' ? spaced.command.value : ''
+)
+
+check('commands are case insensitive', parseCompose('/TITLE Hi').command?.name === 'title')
+
+// Half-typed commands must stay commands: falling back to "send as text" here
+// would put the word "/title" in chat the moment someone hit Enter early.
+const argless = parseCompose('/title')
+check('a bare /title is still a command', argless.command?.name === 'title')
+check(
+  'a bare /title has no value yet',
+  argless.command?.name === 'title' && argless.command.value === ''
+)
+check('a bare /title is not literal text', !argless.literalSlash)
+
+// And the existing behaviour must be untouched.
+check('an unknown slash is still literal', parseCompose('/me waves').command === null)
+check('a routing prefix is not a command', parseCompose('/twitch hi').command === null)
+check('bare text is not a command', parseCompose('hello').command === null)
+check('a routing prefix still routes', parseCompose('/twitch hi').route === 'twitch')
+
 console.log(failures ? `\n${failures} check(s) failed` : '\nAll auth checks passed')
 process.exit(failures ? 1 : 0)

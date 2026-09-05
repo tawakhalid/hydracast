@@ -12,6 +12,7 @@ import type {
   SendOutcome,
   Snapshot,
   StreamInfo,
+  StreamInfoPatch,
   StreamInfoResult
 } from '@shared/types'
 
@@ -45,6 +46,10 @@ const api = {
     ipcRenderer.invoke('stream-info:get', id),
   searchCategories: (id: string, query: string): Promise<CategoryOption[]> =>
     ipcRenderer.invoke('stream-info:search', id, query),
+  /** Sets a title or a game on every connected destination; absent fields stay. */
+  applyStreamInfo: (patch: StreamInfoPatch): Promise<StreamInfoResult[]> =>
+    ipcRenderer.invoke('stream-info:apply-all', patch),
+
   setStreamInfo: (platformIds: string[], info: StreamInfo): Promise<StreamInfoResult[]> =>
     ipcRenderer.invoke('stream-info:set', platformIds, info),
 

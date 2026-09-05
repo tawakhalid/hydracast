@@ -179,13 +179,21 @@ export async function pushStreamInfo(
   const base = { platformId: platform.id }
   const title = info.title.trim()
 
+  // An empty field means "leave this as it is", which is what the shared editor
+  // has always told the user ("it will keep whatever it shows now") while the
+  // request underneath sent `title: ''` and blanked it. It is also what lets
+  // /title and /game be independent commands.
+  if (!title && !info.categoryId) return { ...base, ok: true, skipped: true }
+
   try {
     if (platform.kind === 'twitch') {
       if (!scopes.includes(TWITCH_MANAGE_SCOPE)) {
         return { ...base, ok: false, detail: 'Reconnect to grant permission to set the title' }
       }
-      // Twitch rejects an empty game_id rather than treating it as "leave it".
-      const payload: Record<string, string> = { title }
+      // Twitch rejects an empty game_id rather than treating it as "leave it",
+      // and the same goes for the title, so absent fields are simply omitted.
+      const payload: Record<string, string> = {}
+      if (title) payload['title'] = title
       if (info.categoryId) payload['game_id'] = info.categoryId
 
       const res = await browserFetch(`${HELIX}/channels?broadcaster_id=${userId}`, {
@@ -203,7 +211,8 @@ export async function pushStreamInfo(
       if (!scopes.includes(KICK_WRITE_SCOPE)) {
         return { ...base, ok: false, detail: 'Reconnect to grant permission to set the title' }
       }
-      const payload: Record<string, unknown> = { stream_title: title }
+      const payload: Record<string, unknown> = {}
+      if (title) payload['stream_title'] = title
       const categoryId = Number(info.categoryId)
       if (Number.isFinite(categoryId) && categoryId > 0) payload['category_id'] = categoryId
 

@@ -439,6 +439,26 @@ export interface StreamInfoResult {
   platformId: string
   ok: boolean
   detail?: string
+  /**
+   * True when there was nothing to change, so nothing was sent.
+   *
+   * Distinct from a plain success: "left alone as asked" and "updated" read the
+   * same to a caller checking `ok`, and only one of them is worth a log line.
+   */
+  skipped?: boolean
+}
+
+/**
+ * A partial change to push to every connected destination.
+ *
+ * An absent field is left exactly as it is, which is what makes `/title` and
+ * `/game` independent - setting one must never blank the other. `game` is a
+ * name rather than an id because Twitch and Kick number the same game
+ * differently, so it is looked up per destination.
+ */
+export interface StreamInfoPatch {
+  title?: string
+  game?: string
 }
 
 /**
@@ -462,6 +482,26 @@ export const SEND_PREFIXES: Record<string, PlatformKind> = {
   '/yt': 'youtube'
 }
 
+/**
+ * A slash command Hydracast carries out itself instead of sending as chat.
+ *
+ * Deliberately few. The composer is the one control that is always on screen
+ * while live, so the things worth putting here are the ones you reach for
+ * mid-broadcast without wanting to open a window: wiping the feed, and
+ * retitling or re-categorising every destination at once.
+ */
+export type ComposeCommand =
+  | { name: 'clear' }
+  | { name: 'title'; value: string }
+  | { name: 'game'; value: string }
+
+/** Slash words the app answers to, mapped to what they do. */
+export const COMPOSE_COMMANDS: Record<string, ComposeCommand['name']> = {
+  '/clear': 'clear',
+  '/title': 'title',
+  '/game': 'game'
+}
+
 export interface ComposedMessage {
   /** The text to send, with any routing prefix stripped. */
   text: string
@@ -473,6 +513,8 @@ export interface ComposedMessage {
    * as literal text and the UI warns rather than pretending it is a command.
    */
   literalSlash: boolean
+  /** Set when the line is one of ours; it is acted on, never sent. */
+  command: ComposeCommand | null
 }
 
 /**
@@ -484,16 +526,29 @@ export interface ComposedMessage {
 export function parseCompose(input: string): ComposedMessage {
   const trimmed = input.trim()
   if (!trimmed.startsWith('/')) {
-    return { text: trimmed, route: null, literalSlash: false }
+    return { text: trimmed, route: null, literalSlash: false, command: null }
   }
 
   const space = trimmed.search(/\s/)
   const head = (space < 0 ? trimmed : trimmed.slice(0, space)).toLowerCase()
   const rest = space < 0 ? '' : trimmed.slice(space + 1).trim()
 
+  // Checked before the routing prefixes so a command can never be mistaken for
+  // a message, and before the literal-slash fallback so it is never typed into
+  // chat by accident.
+  const command = COMPOSE_COMMANDS[head]
+  if (command) {
+    return {
+      text: rest,
+      route: null,
+      literalSlash: false,
+      command: command === 'clear' ? { name: 'clear' } : { name: command, value: rest }
+    }
+  }
+
   const route = SEND_PREFIXES[head]
-  if (!route) return { text: trimmed, route: null, literalSlash: true }
-  return { text: rest, route, literalSlash: false }
+  if (!route) return { text: trimmed, route: null, literalSlash: true, command: null }
+  return { text: rest, route, literalSlash: false, command: null }
 }
 
 /** What one platform did with a message that was sent to it. */

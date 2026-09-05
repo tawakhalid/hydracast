@@ -11,8 +11,10 @@ import type {
   PlatformKind,
   Snapshot,
   StreamInfo,
+  StreamInfoPatch,
   StreamInfoResult
 } from '@shared/types'
+import { supportsStreamInfo } from '@shared/types'
 import {
   addPlatform,
   getConfig,
@@ -401,6 +403,16 @@ function registerIpc(): void {
    * may have changed either from the platform's own dashboard since Hydracast
    * last looked; showing a stale local copy would invite overwriting it.
    */
+  /** Reports what an update did, saying nothing for destinations left alone. */
+  const logStreamInfo = (results: StreamInfoResult[], platforms: Platform[]): void => {
+    for (const result of results) {
+      const platform = platforms.find((p) => p.id === result.platformId)
+      if (!platform || result.skipped) continue
+      if (result.ok) log('success', 'auth', `${platform.name}: stream info updated`)
+      else log('warn', 'auth', `${platform.name}: ${result.detail ?? 'update failed'}`)
+    }
+  }
+
   ipcMain.handle('stream-info:get', async (_e, id: string) => {
     const platform = getConfig().platforms.find((p) => p.id === id)
     const account = auth.account(id)
@@ -456,12 +468,68 @@ function registerIpc(): void {
           return pushStreamInfo(platform, token, account.userId, account.scopes, info)
         })
       )
-      for (const result of results) {
-        const platform = platforms.find((p) => p.id === result.platformId)
-        if (!platform) continue
-        if (result.ok) log('success', 'auth', `${platform.name}: stream info updated`)
-        else log('warn', 'auth', `${platform.name}: ${result.detail ?? 'update failed'}`)
-      }
+      logStreamInfo(results, platforms)
+      return results
+    }
+  )
+
+  /**
+   * Applies a title or a game to every connected destination at once.
+   *
+   * Separate from `stream-info:set` because the caller here has a game *name*
+   * rather than an id, and the two platforms number the same game differently -
+   * so the lookup has to happen per destination. Doing that in the main process
+   * keeps the renderer from having to fan out a search and an update per
+   * platform and then reassemble the outcome.
+   */
+  ipcMain.handle(
+    'stream-info:apply-all',
+    async (_e, patch: StreamInfoPatch): Promise<StreamInfoResult[]> => {
+      const platforms = getConfig().platforms.filter(
+        (p) => supportsStreamInfo(p.kind) && auth.account(p.id)
+      )
+      if (!platforms.length) return []
+
+      const results = await Promise.all(
+        platforms.map(async (platform): Promise<StreamInfoResult> => {
+          const account = auth.account(platform.id)
+          if (!account) {
+            return {
+              platformId: platform.id,
+              ok: false,
+              detail: `Connect your ${platform.name} account first`
+            }
+          }
+          const token = await auth.ensureToken(platform.id)
+          if (!token) {
+            return { platformId: platform.id, ok: false, detail: 'Session expired - connect again' }
+          }
+
+          let categoryId = ''
+          let categoryName = ''
+          if (patch.game) {
+            // First match wins. The alternative is a picker, and a command
+            // typed mid-stream is chosen precisely to avoid one.
+            const found = await searchCategories(platform, token, patch.game).catch(() => [])
+            if (!found.length) {
+              return {
+                platformId: platform.id,
+                ok: false,
+                detail: `No ${platform.name} category matching "${patch.game}"`
+              }
+            }
+            categoryId = found[0].id
+            categoryName = found[0].name
+          }
+
+          return pushStreamInfo(platform, token, account.userId, account.scopes, {
+            title: patch.title ?? '',
+            categoryId,
+            categoryName
+          })
+        })
+      )
+      logStreamInfo(results, platforms)
       return results
     }
   )
